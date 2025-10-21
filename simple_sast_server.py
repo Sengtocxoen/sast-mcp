@@ -1,12 +1,44 @@
 #!/usr/bin/env python3
 """
-Simple SAST (Static Application Security Testing) MCP Server
-A lightweight version that works without optional dependencies
+================================================================================
+Simple SAST Server - Lightweight Alternative with No External Dependencies
+================================================================================
 
-This version provides all the core SAST functionality without requiring:
-- redis (for caching)
-- flask-limiter (for rate limiting)
-- config.py (uses environment variables directly)
+A simplified SAST server implementation that works without optional dependencies.
+This is an alternative to sast_server.py for users who want a minimal setup.
+
+DIFFERENCES FROM sast_server.py:
+    - No python-dotenv dependency (uses environment variables directly)
+    - Includes optional API key authentication
+    - Includes basic rate limiting (in-memory)
+    - Includes tool result caching (in-memory)
+    - Simpler configuration
+
+WHEN TO USE THIS:
+    - Quick testing without installing dependencies
+    - Minimal server deployments
+    - Environments where you can't install extra packages
+
+WHEN TO USE sast_server.py INSTEAD:
+    - Production deployments (better structured)
+    - When using .env file for configuration
+    - When you need path resolution for Windows/Linux
+
+USAGE:
+    python3 simple_sast_server.py --port 6000
+    python3 simple_sast_server.py --port 6000 --host 127.0.0.1
+
+CONFIGURATION:
+    All via environment variables (no .env file support):
+        API_PORT=6000
+        DEBUG_MODE=0
+        COMMAND_TIMEOUT=300
+        SAST_API_KEY=your_secret_key (optional)
+        ENABLE_RATE_LIMITING=false (optional)
+
+AUTHOR: MCP-SAST-Server Contributors
+LICENSE: MIT
+================================================================================
 """
 
 import argparse

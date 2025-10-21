@@ -1,9 +1,51 @@
 #!/usr/bin/env python3
 """
-SAST MCP Client - Connects Claude Code AI to SAST Tools Server
+================================================================================
+MCP-SAST-Client - Claude Code Integration for Security Analysis
+================================================================================
 
-This MCP client provides Claude Code with access to comprehensive
-Static Application Security Testing (SAST) tools for code security analysis.
+This MCP (Model Context Protocol) client connects Claude Code to the SAST
+Tools Server, enabling AI-powered security analysis through natural language.
+
+FEATURES:
+    - 15+ SAST tool integrations via MCP protocol
+    - Simple function calls from Claude Code
+    - Automatic server communication
+    - JSON result parsing
+    - Health monitoring
+
+ARCHITECTURE:
+    Claude Code ← → MCP Client (this file) ← → SAST Server ← → Security Tools
+
+CONFIGURATION:
+    Command-line arguments:
+        --server: SAST server URL (default: http://localhost:6000)
+        --timeout: Request timeout in seconds (default: 600)
+        --debug: Enable debug logging
+
+USAGE:
+    python3 sast_mcp_client.py --server http://192.168.1.100:6000
+    python3 sast_mcp_client.py --server http://localhost:6000 --debug
+
+INTEGRATION:
+    Add to .claude.json:
+    {
+      "mcpServers": {
+        "sast_tools": {
+          "type": "stdio",
+          "command": "python",
+          "args": [
+            "/path/to/sast_mcp_client.py",
+            "--server",
+            "http://YOUR_SERVER_IP:6000"
+          ]
+        }
+      }
+    }
+
+AUTHOR: MCP-SAST-Server Contributors
+LICENSE: MIT
+================================================================================
 """
 
 import sys
@@ -15,7 +57,10 @@ import requests
 
 from mcp.server.fastmcp import FastMCP
 
-# Configure logging
+# ============================================================================
+# LOGGING CONFIGURATION
+# ============================================================================
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -23,13 +68,37 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Default configuration
-DEFAULT_SAST_SERVER = "http://192.168.204.160:6000"
-DEFAULT_REQUEST_TIMEOUT = 600  # 10 minutes default timeout
+# ============================================================================
+# DEFAULT CONFIGURATION
+# ============================================================================
 
+# SAST Server URL Configuration
+# IMPORTANT: Update this to your SAST server's IP address
+# Examples:
+#   - Localhost (server on same machine): "http://localhost:6000"
+#   - Remote server (Kali VM): "http://192.168.1.100:6000"
+#   - Custom port: "http://192.168.1.100:8080"
+DEFAULT_SAST_SERVER = "http://localhost:6000"
+
+# Request Timeout (in seconds)
+# Increase for large codebases or slow networks
+DEFAULT_REQUEST_TIMEOUT = 600  # 10 minutes
+
+# ============================================================================
+# HTTP CLIENT
+# ============================================================================
 
 class SASTToolsClient:
-    """Client for communicating with the SAST Tools API Server"""
+    """
+    HTTP client for communicating with the SAST Tools API Server.
+
+    This class handles all HTTP communication between the MCP client and
+    the SAST server, including request formatting and error handling.
+
+    Attributes:
+        server_url: Base URL of the SAST server
+        timeout: Request timeout in seconds
+    """
 
     def __init__(self, server_url: str, timeout: int = DEFAULT_REQUEST_TIMEOUT):
         """

@@ -1,0 +1,67 @@
+{
+  "_comment": "Copy this file to your Claude Code configuration directory",
+  "_instructions": [
+    "1. Locate your Claude Code config: %USERPROFILE%\\.claude.json (Windows) or ~/.claude.json (Linux/Mac)",
+    "2. Copy the 'mcpServers' section below into your .claude.json",
+    "3. Update the paths and server URL to match your setup"
+  ],
+
+  "mcpServers": {
+    "sast_tools": {
+      "type": "stdio",
+      "command": "python",
+      "args": [
+        "/path/to/MCP-SAST-Server/sast_mcp_client.py",
+        "--server",
+        "http://YOUR_KALI_IP:6000"
+      ]
+    }
+  },
+
+  "_examples": {
+    "windows_local": {
+      "description": "Windows with local Kali VM",
+      "mcpServers": {
+        "sast_tools": {
+          "type": "stdio",
+          "command": "python",
+          "args": [
+            "C:/Projects/MCP-SAST-Server/sast_mcp_client.py",
+            "--server",
+            "http://192.168.1.100:6000"
+          ]
+        }
+      }
+    },
+
+    "windows_remote": {
+      "description": "Windows with remote Kali server",
+      "mcpServers": {
+        "sast_tools": {
+          "type": "stdio",
+          "command": "python",
+          "args": [
+            "F:/work/MCP-SAST-Server/sast_mcp_client.py",
+            "--server",
+            "http://10.0.0.50:6000"
+          ]
+        }
+      }
+    },
+
+    "linux": {
+      "description": "Linux/Mac configuration",
+      "mcpServers": {
+        "sast_tools": {
+          "type": "stdio",
+          "command": "python3",
+          "args": [
+            "/home/user/MCP-SAST-Server/sast_mcp_client.py",
+            "--server",
+            "http://localhost:6000"
+          ]
+        }
+      }
+    }
+  }
+}

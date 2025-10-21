@@ -87,7 +87,16 @@ cd MCP-SAST-Server
 pip install -r requirements.txt
 ```
 
-#### 3. Start SAST Server (on Kali Linux)
+#### 3. Configure Server (Optional)
+
+Copy the example environment file and customize:
+
+```bash
+cp .env.example .env
+# Edit .env with your settings (port, paths, timeouts)
+```
+
+#### 4. Start SAST Server (on Kali Linux)
 
 **Option A: Full-Featured Server** (recommended for complete functionality)
 
@@ -101,36 +110,49 @@ python3 sast_server.py --port 6000
 python3 simple_sast_server.py --port 6000
 ```
 
-#### 4. Configure Claude Code (on Windows)
+#### 5. Configure Claude Code (on Windows)
+
+**Option A: Use the example configuration**
+
+1. Open `config.example.json` in the repository
+2. Copy the configuration that matches your setup
+3. Add it to your `.claude.json` file
+4. Update the paths and server URL
+
+**Option B: Manual configuration**
 
 Add the MCP server configuration to your `.claude.json`:
 
 ```json
 {
-  "projects": {
-    "F:\\work\\YourProject": {
-      "mcpServers": {
-        "sast_tools": {
-          "type": "stdio",
-          "command": "python",
-          "args": [
-            "F:/work/Resola/Pentesting/MCP-SAST-Server/sast_mcp_client.py",
-            "--server",
-            "http://YOUR_KALI_IP:6000"
-          ]
-        }
-      }
+  "mcpServers": {
+    "sast_tools": {
+      "type": "stdio",
+      "command": "python",
+      "args": [
+        "/path/to/MCP-SAST-Server/sast_mcp_client.py",
+        "--server",
+        "http://YOUR_KALI_IP:6000"
+      ]
     }
   }
 }
 ```
 
-Replace:
-- `F:\\work\\YourProject` with your actual project path
-- `F:/work/Resola/Pentesting/MCP-SAST-Server/sast_mcp_client.py` with the actual path to the client script
-- `YOUR_KALI_IP` with your Kali Linux machine's IP address
+**Important: Update these values:**
+- `/path/to/MCP-SAST-Server/sast_mcp_client.py` - Full path to the MCP client script
+- `YOUR_KALI_IP` - Your Kali Linux machine's IP address (e.g., `192.168.1.100`)
+- Port `6000` - Change if you configured a different port
 
-#### 5. Verify Installation
+**Windows Path Examples:**
+- `C:/Projects/MCP-SAST-Server/sast_mcp_client.py`
+- `F:/work/MCP-SAST-Server/sast_mcp_client.py`
+
+**Linux/Mac Path Examples:**
+- `/home/user/MCP-SAST-Server/sast_mcp_client.py`
+- `~/projects/MCP-SAST-Server/sast_mcp_client.py`
+
+#### 6. Verify Installation
 
 **On Kali Linux:**
 ```bash
@@ -251,24 +273,57 @@ For a complete installation guide, refer to each tool's official documentation.
 
 ## Configuration
 
-### Environment Variables
+### Server Configuration (.env file)
 
-**Server Configuration:**
+The server can be configured using environment variables or a `.env` file:
+
+**Using .env file (recommended):**
+
+```bash
+# Copy the example file
+cp .env.example .env
+
+# Edit .env with your settings
+nano .env
+```
+
+**Available Configuration Options:**
 
 ```bash
 # Server Port (default: 6000)
-export API_PORT=6000
+API_PORT=6000
 
-# Debug Mode (default: false)
-export DEBUG_MODE=1
+# Debug Mode (default: 0)
+DEBUG_MODE=0
 
 # Command Timeout in seconds (default: 3600)
-export COMMAND_TIMEOUT=3600
+COMMAND_TIMEOUT=3600
 
-# Path Mapping
+# Max timeout limit (default: 7200)
+MAX_TIMEOUT=7200
+
+# Path Mapping (for Windows/Linux cross-platform)
+MOUNT_POINT=/mnt/work
+WINDOWS_BASE=F:/work
+```
+
+**Using environment variables directly:**
+
+```bash
+export API_PORT=6000
+export DEBUG_MODE=1
 export MOUNT_POINT=/mnt/work
 export WINDOWS_BASE=F:/work
 ```
+
+### Client Configuration (config.example.json)
+
+For Claude Code configuration, see `config.example.json` which includes:
+- Windows with local Kali VM example
+- Windows with remote Kali server example
+- Linux/Mac configuration example
+
+Simply copy the appropriate configuration to your `.claude.json` and update the paths and IP address.
 
 ### Path Resolution
 
@@ -330,15 +385,33 @@ POST /api/command
 
 ```
 MCP-SAST-Server/
-├── sast_server.py              # Full-featured SAST server
-├── simple_sast_server.py       # Lightweight server (no dependencies)
+├── sast_server.py              # Full-featured SAST server (recommended)
+├── simple_sast_server.py       # Lightweight alternative (minimal dependencies)
 ├── sast_mcp_client.py          # MCP client for Claude Code integration
 ├── requirements.txt            # Python dependencies
+├── .env.example                # Server configuration template
+├── config.example.json         # Claude Code configuration examples
 ├── .gitignore                  # Git ignore rules
-├── README.md                   # This file
-├── PATH_RESOLUTION_GUIDE.md    # Path resolution documentation
-└── TOOL_COMMANDS_VERIFICATION.md # Tool command verification guide
+├── LICENSE                     # MIT License
+├── CONTRIBUTING.md             # Contribution guidelines
+└── README.md                   # This file (main documentation)
 ```
+
+### File Descriptions
+
+**Core Files:**
+- `sast_server.py` - Main SAST server with .env support and path resolution
+- `sast_mcp_client.py` - MCP client that connects Claude Code to the server
+- `simple_sast_server.py` - Alternative server with no external dependencies
+
+**Configuration:**
+- `.env.example` - Environment variables template for server configuration
+- `config.example.json` - Claude Code integration examples for different setups
+
+**Documentation:**
+- `README.md` - Complete project documentation (you're reading it!)
+- `CONTRIBUTING.md` - Guidelines for contributing to the project
+- `LICENSE` - MIT License terms
 
 ## Troubleshooting
 

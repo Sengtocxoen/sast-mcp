@@ -1,24 +1,59 @@
 #!/usr/bin/env python3
 """
-SAST (Static Application Security Testing) MCP Server
-Provides security code analysis tools through MCP protocol
+================================================================================
+MCP-SAST-Server - Security Analysis Server for Claude Code
+================================================================================
 
-Supported SAST Tools:
-- Semgrep: Multi-language static analysis
-- Bearer: Security and privacy risk scanner
-- Graudit: Grep-based source code auditing
-- Bandit: Python security linter
-- ESLint Security: JavaScript security linting
-- Gosec: Go security checker
-- Brakeman: Ruby on Rails security scanner
-- NodeJSScan: Node.js security scanner
-- PMD: Java/Apex security scanner
-- TruffleHog: Secrets scanner
-- Gitleaks: Git secrets detector
-- Checkov: Infrastructure as Code scanner
-- Safety: Python dependency checker
-- npm audit: Node.js dependency checker
-- OWASP Dependency-Check: Multi-language dependency checker
+A comprehensive SAST (Static Application Security Testing) server that provides
+security code analysis tools through HTTP API endpoints. Designed to work with
+the MCP (Model Context Protocol) client for Claude Code integration.
+
+FEATURES:
+    - 15+ security scanning tools integration
+    - Cross-platform path resolution (Windows ↔ Linux)
+    - Timeout handling for long-running scans
+    - JSON output for easy parsing
+    - Health check endpoint for monitoring
+
+SUPPORTED TOOLS:
+    Code Analysis:
+        - Semgrep: Multi-language static analysis (30+ languages)
+        - Bandit: Python security scanner
+        - ESLint Security: JavaScript/TypeScript security
+        - Gosec: Go security checker
+        - Brakeman: Ruby on Rails security scanner
+        - Graudit: Grep-based code auditing
+        - Bearer: Security and privacy risk scanner
+
+    Secret Detection:
+        - TruffleHog: Secrets scanner for repos and filesystems
+        - Gitleaks: Git secrets detector
+
+    Dependency Scanning:
+        - Safety: Python dependency checker
+        - npm audit: Node.js dependency checker
+        - OWASP Dependency-Check: Multi-language scanner
+
+    Infrastructure as Code:
+        - Checkov: Terraform, CloudFormation, Kubernetes scanner
+        - tfsec: Terraform security scanner
+        - Trivy: Container and IaC vulnerability scanner
+
+CONFIGURATION:
+    Set via environment variables or .env file:
+        - API_PORT: Server port (default: 6000)
+        - DEBUG_MODE: Enable debug logging (default: 0)
+        - COMMAND_TIMEOUT: Scan timeout in seconds (default: 3600)
+        - MOUNT_POINT: Linux mount path (default: /mnt/work)
+        - WINDOWS_BASE: Windows base path (default: F:/work)
+
+USAGE:
+    python3 sast_server.py --port 6000
+    python3 sast_server.py --port 6000 --debug
+
+AUTHOR: MCP-SAST-Server Contributors
+LICENSE: MIT
+================================================================================
 """
 
 import argparse
@@ -36,26 +71,38 @@ from datetime import datetime
 import tempfile
 import shutil
 
+# ============================================================================
+# ENVIRONMENT & CONFIGURATION
+# ============================================================================
+
+# Load environment variables from .env file if it exists
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    # python-dotenv not installed, will use system environment variables
+    pass
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ]
+    handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger(__name__)
 
-# Configuration
+# Server Configuration
 API_PORT = int(os.environ.get("API_PORT", 6000))
 DEBUG_MODE = os.environ.get("DEBUG_MODE", "0").lower() in ("1", "true", "yes", "y")
-COMMAND_TIMEOUT = int(os.environ.get("COMMAND_TIMEOUT", 3600))  # 60 minutes default
-MAX_TIMEOUT = 7200  # 120 minutes max
+COMMAND_TIMEOUT = int(os.environ.get("COMMAND_TIMEOUT", 3600))  # 1 hour default
+MAX_TIMEOUT = 7200  # 2 hours maximum
 
-# Path resolution configuration
-MOUNT_POINT = os.environ.get("MOUNT_POINT", "/mnt/work")
-WINDOWS_BASE = os.environ.get("WINDOWS_BASE", "F:/work")
+# Path Resolution Configuration
+# These settings enable cross-platform operation (Windows client -> Linux server)
+MOUNT_POINT = os.environ.get("MOUNT_POINT", "/mnt/work")  # Linux mount point
+WINDOWS_BASE = os.environ.get("WINDOWS_BASE", "F:/work")  # Windows base path
 
+# Initialize Flask application
 app = Flask(__name__)
 
 # ============================================================================
@@ -164,11 +211,36 @@ def verify_mount() -> Dict[str, Any]:
     }
 
 class CommandExecutor:
-    """Enhanced command executor with better timeout and output handling"""
+    """
+    Enhanced command executor with proper timeout and output handling.
+
+    This class handles running shell commands with:
+        - Configurable timeouts (prevents hanging on long scans)
+        - Real-time output capture (stdout and stderr)
+        - Graceful termination (SIGTERM then SIGKILL if needed)
+        - Partial result support (returns output even if timed out)
+
+    Attributes:
+        command: Shell command to execute
+        timeout: Maximum execution time in seconds
+        cwd: Working directory for command execution
+        stdout_data: Captured standard output
+        stderr_data: Captured standard error
+        return_code: Command exit code
+        timed_out: Whether the command exceeded timeout
+    """
 
     def __init__(self, command: str, timeout: int = COMMAND_TIMEOUT, cwd: Optional[str] = None):
+        """
+        Initialize the command executor.
+
+        Args:
+            command: Shell command to execute
+            timeout: Maximum execution time (capped at MAX_TIMEOUT)
+            cwd: Working directory for execution (optional)
+        """
         self.command = command
-        self.timeout = min(timeout, MAX_TIMEOUT)
+        self.timeout = min(timeout, MAX_TIMEOUT)  # Enforce maximum timeout
         self.cwd = cwd
         self.process = None
         self.stdout_data = ""

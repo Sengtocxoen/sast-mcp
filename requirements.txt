@@ -1,16 +1,36 @@
-# SAST MCP Server Requirements
+# ============================================================================
+# MCP-SAST-Server Requirements
+# ============================================================================
+# Python dependencies for the SAST server and MCP client
+#
+# Installation:
+#   pip install -r requirements.txt
+#
+# For full server functionality, you also need to install SAST tools:
+#   - Semgrep, Bandit, TruffleHog, Gitleaks, etc.
+#   See README.md for complete installation instructions
+# ============================================================================
 
-# Core dependencies
-flask==3.0.0
-requests==2.31.0
-mcp==0.9.0
+# Web Framework (for SAST server)
+flask>=3.0.0
 
-# SAST Tools (Python-based)
-semgrep==1.52.0
-bandit==1.7.6
-safety==3.0.1
-checkov==3.1.34
+# HTTP Client (for MCP client)
+requests>=2.31.0
 
-# Utility libraries
-python-dotenv==1.0.0
-colorama==0.4.6
+# Model Context Protocol (for Claude Code integration)
+mcp>=0.9.0
+
+# Environment Variables (optional, for .env file support)
+python-dotenv>=1.0.0
+
+# ============================================================================
+# Optional: Python-based SAST Tools
+# ============================================================================
+# These tools can be installed via pip, but are optional.
+# Many SAST tools are installed separately (npm, apt, etc.)
+#
+# Uncomment to install Python-based tools:
+# semgrep>=1.52.0
+# bandit>=1.7.6
+# safety>=3.0.1
+# checkov>=3.1.34
