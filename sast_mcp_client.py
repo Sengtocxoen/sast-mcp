@@ -672,6 +672,304 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
         return sast_client.safe_post("api/container/trivy", data)
 
     # ========================================================================
+    # KALI LINUX SECURITY TOOLS
+    # ========================================================================
+
+    @mcp.tool()
+    def nikto_scan(
+        target: str,
+        port: str = "80",
+        ssl: bool = False,
+        output_format: str = "txt",
+        output_file: str = "",
+        additional_args: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Execute Nikto web server scanner to identify security issues and misconfigurations.
+        Comprehensive web server security scanner that tests for thousands of vulnerabilities.
+
+        Args:
+            target: Target host (IP address or domain name)
+            port: Port to scan (default: 80)
+            ssl: Use SSL/HTTPS connection (boolean)
+            output_format: Output format (txt, html, csv, xml)
+            output_file: Path to save the scan results
+            additional_args: Additional Nikto command-line arguments
+
+        Returns:
+            Web server vulnerabilities, misconfigurations, and security issues
+        """
+        data = {
+            "target": target,
+            "port": port,
+            "ssl": ssl,
+            "output_format": output_format,
+            "output_file": output_file,
+            "additional_args": additional_args
+        }
+        return sast_client.safe_post("api/web/nikto", data)
+
+    @mcp.tool()
+    def nmap_scan(
+        target: str,
+        scan_type: str = "-sV",
+        ports: str = "",
+        output_format: str = "normal",
+        output_file: str = "",
+        additional_args: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Execute Nmap network and port scanner for host discovery and service detection.
+        Industry-standard tool for network exploration and security auditing.
+
+        Args:
+            target: Target host(s) to scan (IP, domain, or CIDR notation like 192.168.1.0/24)
+            scan_type: Type of scan to perform (default: -sV for version detection):
+                      - "-sS": SYN stealth scan
+                      - "-sT": TCP connect scan
+                      - "-sU": UDP scan
+                      - "-sV": Service version detection
+                      - "-sC": Script scan with default scripts
+                      - "-A": Aggressive scan (OS detection, version detection, scripts, traceroute)
+                      - "-sn": Ping scan (host discovery only)
+            ports: Port specification (e.g., "80,443,8080" or "1-1000" or "1-65535")
+            output_format: Output format (normal, xml, grepable)
+            output_file: Path to save scan results
+            additional_args: Additional Nmap arguments
+
+        Returns:
+            Open ports, running services, versions, and OS detection results
+        """
+        data = {
+            "target": target,
+            "scan_type": scan_type,
+            "ports": ports,
+            "output_format": output_format,
+            "output_file": output_file,
+            "additional_args": additional_args
+        }
+        return sast_client.safe_post("api/network/nmap", data)
+
+    @mcp.tool()
+    def sqlmap_scan(
+        target: str,
+        data: str = "",
+        cookie: str = "",
+        level: str = "1",
+        risk: str = "1",
+        batch: bool = True,
+        output_dir: str = "",
+        additional_args: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Execute SQLMap for automated SQL injection detection and exploitation.
+        Powerful tool for finding and exploiting SQL injection vulnerabilities.
+
+        Args:
+            target: Target URL to test for SQL injection
+            data: POST data string for testing POST parameters
+            cookie: HTTP Cookie header value for authenticated testing
+            level: Level of tests to perform (1-5, default: 1):
+                  - 1: Basic tests
+                  - 5: Most comprehensive tests
+            risk: Risk level of tests (1-3, default: 1):
+                 - 1: Safe tests only
+                 - 3: Heavy query tests that may cause database issues
+            batch: Never ask for user input, use defaults (boolean, default: True)
+            output_dir: Directory to save detailed output and session files
+            additional_args: Additional SQLMap arguments
+
+        Returns:
+            SQL injection vulnerabilities found with details on exploitation
+        """
+        data_dict = {
+            "target": target,
+            "data": data,
+            "cookie": cookie,
+            "level": level,
+            "risk": risk,
+            "batch": batch,
+            "output_dir": output_dir,
+            "additional_args": additional_args
+        }
+        return sast_client.safe_post("api/web/sqlmap", data_dict)
+
+    @mcp.tool()
+    def wpscan_scan(
+        target: str,
+        enumerate: str = "vp",
+        api_token: str = "",
+        output_file: str = "",
+        additional_args: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Execute WPScan WordPress security scanner for WordPress-specific vulnerabilities.
+        Specialized scanner for WordPress sites, plugins, and themes.
+
+        Args:
+            target: Target WordPress URL (e.g., https://example.com)
+            enumerate: What to enumerate:
+                      - "vp": Vulnerable plugins (default)
+                      - "ap": All plugins
+                      - "vt": Vulnerable themes
+                      - "at": All themes
+                      - "u": Users
+                      - "m": Media IDs
+                      - Multiple options: "vp,vt,u"
+            api_token: WPScan API token for vulnerability data (get free token from wpscan.com)
+            output_file: Path to save scan results (JSON format)
+            additional_args: Additional WPScan arguments
+
+        Returns:
+            WordPress vulnerabilities in core, plugins, themes, and user enumeration results
+        """
+        data = {
+            "target": target,
+            "enumerate": enumerate,
+            "api_token": api_token,
+            "output_file": output_file,
+            "additional_args": additional_args
+        }
+        return sast_client.safe_post("api/web/wpscan", data)
+
+    @mcp.tool()
+    def dirb_scan(
+        target: str,
+        wordlist: str = "/usr/share/dirb/wordlists/common.txt",
+        extensions: str = "",
+        output_file: str = "",
+        additional_args: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Execute DIRB web content scanner for finding hidden directories and files.
+        Dictionary-based web content discovery tool.
+
+        Args:
+            target: Target URL to scan (e.g., http://example.com)
+            wordlist: Path to wordlist file (default: /usr/share/dirb/wordlists/common.txt)
+                     Other options: big.txt, small.txt, catala.txt, spanish.txt, etc.
+            extensions: File extensions to check (e.g., "php,html,js,txt")
+            output_file: Path to save scan results
+            additional_args: Additional DIRB arguments
+
+        Returns:
+            Discovered directories, files, and hidden web content
+        """
+        data = {
+            "target": target,
+            "wordlist": wordlist,
+            "extensions": extensions,
+            "output_file": output_file,
+            "additional_args": additional_args
+        }
+        return sast_client.safe_post("api/web/dirb", data)
+
+    @mcp.tool()
+    def lynis_audit(
+        target: str = "",
+        audit_mode: str = "system",
+        quick: bool = False,
+        log_file: str = "",
+        report_file: str = "",
+        additional_args: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Execute Lynis security auditing tool for Unix/Linux system hardening assessment.
+        Comprehensive security audit tool for system hardening and compliance.
+
+        Args:
+            target: Target directory or file (for dockerfile mode)
+            audit_mode: Type of audit to perform:
+                       - "system": Full system audit (default)
+                       - "dockerfile": Audit a Dockerfile
+            quick: Quick scan mode (boolean, less comprehensive but faster)
+            log_file: Path to save detailed log file
+            report_file: Path to save audit report
+            additional_args: Additional Lynis arguments
+
+        Returns:
+            System security assessment with hardening recommendations and compliance findings
+        """
+        data = {
+            "target": target,
+            "audit_mode": audit_mode,
+            "quick": quick,
+            "log_file": log_file,
+            "report_file": report_file,
+            "additional_args": additional_args
+        }
+        return sast_client.safe_post("api/system/lynis", data)
+
+    @mcp.tool()
+    def snyk_scan(
+        target: str = ".",
+        test_type: str = "test",
+        severity_threshold: str = "",
+        json_output: bool = True,
+        output_file: str = "",
+        additional_args: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Execute Snyk security scanner for modern dependency and container vulnerability scanning.
+        Developer-first security tool for finding and fixing vulnerabilities.
+
+        Args:
+            target: Path to project directory (default: current directory)
+            test_type: Type of test to perform:
+                      - "test": Test for open source vulnerabilities (default)
+                      - "container": Test container images
+                      - "iac": Test Infrastructure as Code files
+                      - "code": Test source code (SAST)
+            severity_threshold: Only report issues of this severity or higher (low, medium, high, critical)
+            json_output: Output in JSON format (boolean, default: True)
+            output_file: Path to save scan results
+            additional_args: Additional Snyk arguments
+
+        Returns:
+            Vulnerabilities in dependencies, containers, IaC, or code with fix recommendations
+        """
+        data = {
+            "target": target,
+            "test_type": test_type,
+            "severity_threshold": severity_threshold,
+            "json_output": json_output,
+            "output_file": output_file,
+            "additional_args": additional_args
+        }
+        return sast_client.safe_post("api/dependencies/snyk", data)
+
+    @mcp.tool()
+    def clamav_scan(
+        target: str,
+        recursive: bool = True,
+        infected_only: bool = False,
+        output_file: str = "",
+        additional_args: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Execute ClamAV antivirus scanner for malware and virus detection.
+        Open-source antivirus engine for detecting trojans, viruses, malware, and other malicious threats.
+
+        Args:
+            target: Path to file or directory to scan
+            recursive: Scan directories recursively (boolean, default: True)
+            infected_only: Only display infected files in output (boolean)
+            output_file: Path to save scan log
+            additional_args: Additional ClamAV arguments
+
+        Returns:
+            Malware detection results with infected file locations and threat names
+        """
+        data = {
+            "target": target,
+            "recursive": recursive,
+            "infected_only": infected_only,
+            "output_file": output_file,
+            "additional_args": additional_args
+        }
+        return sast_client.safe_post("api/malware/clamav", data)
+
+    # ========================================================================
     # UTILITY TOOLS
     # ========================================================================
 

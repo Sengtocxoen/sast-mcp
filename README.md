@@ -8,12 +8,18 @@ This project provides a bridge between Claude Code and industry-standard securit
 
 ### Key Features
 
-- **15+ SAST Tools Integration**: Semgrep, Bandit, ESLint Security, TruffleHog, Gitleaks, and more
+- **23+ Security Tools Integration**:
+  - SAST: Semgrep, Bandit, ESLint Security, Gosec, Brakeman, Graudit, Bearer
+  - Secrets: TruffleHog, Gitleaks
+  - Dependencies: Safety, npm audit, OWASP Dependency-Check, Snyk
+  - IaC: Checkov, tfsec, Trivy
+  - Kali Tools: Nikto, Nmap, SQLMap, WPScan, DIRB, Lynis, ClamAV
 - **MCP Protocol**: Seamless integration with Claude Code AI
 - **Remote Execution**: Run security tools on a dedicated security VM (Kali Linux) while working on Windows
 - **Path Resolution**: Automatic Windows ↔ Linux path mapping for cross-platform operation
+- **File Output Support**: All tools support saving results to files for further analysis
 - **Flexible Architecture**: Choose between full-featured or lightweight server
-- **Comprehensive Coverage**: Code analysis, secret scanning, dependency checking, IaC security
+- **Comprehensive Coverage**: Code analysis, secret scanning, dependency checking, IaC security, web security, network scanning, malware detection
 
 ## Architecture
 
@@ -54,11 +60,21 @@ This project provides a bridge between Claude Code and industry-standard securit
 - **Safety** - Python dependency vulnerability checker
 - **npm audit** - Node.js dependency security audit
 - **OWASP Dependency-Check** - Multi-language dependency scanner
+- **Snyk** - Modern dependency and container scanner
 
 ### Infrastructure as Code
 - **Checkov** - Terraform, CloudFormation, Kubernetes, Dockerfile scanner
 - **tfsec** - Terraform security scanner
 - **Trivy** - Container and IaC vulnerability scanner
+
+### Kali Linux Security Tools
+- **Nikto** - Web server vulnerability scanner
+- **Nmap** - Network and port scanner
+- **SQLMap** - SQL injection detection and exploitation
+- **WPScan** - WordPress security scanner
+- **DIRB** - Web content discovery scanner
+- **Lynis** - System auditing and hardening tool
+- **ClamAV** - Antivirus and malware scanner
 
 ## Installation
 
@@ -223,6 +239,57 @@ Use Checkov to scan Terraform configurations in F:/work/MyProject/terraform
 Scan F:/work/MyProject/Dockerfile with Trivy
 ```
 
+### Kali Security Tools
+
+**Scan web server with Nikto:**
+```
+@sast_tools
+
+Run Nikto scan on https://example.com with SSL and save results to /tmp/nikto-scan.txt
+```
+
+**Network scanning with Nmap:**
+```
+@sast_tools
+
+Use Nmap to scan 192.168.1.1 for open ports 1-1000 and save results
+```
+
+**SQL injection testing:**
+```
+@sast_tools
+
+Test https://example.com/login.php for SQL injection using SQLMap
+```
+
+**WordPress security scan:**
+```
+@sast_tools
+
+Scan https://wordpress-site.com with WPScan to enumerate vulnerable plugins
+```
+
+**Web content discovery:**
+```
+@sast_tools
+
+Run DIRB on https://example.com to discover hidden directories and files
+```
+
+**System audit:**
+```
+@sast_tools
+
+Run Lynis system audit to check security hardening
+```
+
+**Malware scanning:**
+```
+@sast_tools
+
+Scan F:/work/MyProject with ClamAV antivirus to detect malware
+```
+
 ## Tool Installation
 
 ### Installing Security Tools on Kali Linux
@@ -267,6 +334,54 @@ wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-k
 echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee -a /etc/apt/sources.list.d/trivy.list
 sudo apt update
 sudo apt install trivy
+```
+
+### Installing Kali Linux Tools
+
+Most Kali tools come pre-installed on Kali Linux. For missing tools:
+
+**Nikto:**
+```bash
+sudo apt install nikto
+```
+
+**Nmap:**
+```bash
+sudo apt install nmap
+```
+
+**SQLMap:**
+```bash
+sudo apt install sqlmap
+```
+
+**WPScan:**
+```bash
+sudo gem install wpscan
+# Or
+sudo apt install wpscan
+```
+
+**DIRB:**
+```bash
+sudo apt install dirb
+```
+
+**Lynis:**
+```bash
+sudo apt install lynis
+```
+
+**Snyk:**
+```bash
+npm install -g snyk
+# Or download from https://github.com/snyk/cli
+```
+
+**ClamAV:**
+```bash
+sudo apt install clamav clamav-daemon
+sudo freshclam  # Update virus definitions
 ```
 
 For a complete installation guide, refer to each tool's official documentation.
