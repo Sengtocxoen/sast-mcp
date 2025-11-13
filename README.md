@@ -312,6 +312,8 @@ The script will:
 
 **Installation takes 5-15 minutes depending on your internet speed.**
 
+**⚠ Having installation issues?** Check [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for solutions to common problems like stuck downloads, version conflicts, or outdated vendor links.
+
 ### Manual Installation
 
 If you prefer to install tools manually:
