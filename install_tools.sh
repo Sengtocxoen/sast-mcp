@@ -8,7 +8,8 @@
 # Usage: sudo bash install_tools.sh
 ################################################################################
 
-set -e  # Exit on error
+# Don't exit on error - we want to continue even if some tools fail
+# set -e
 
 # Colors for output
 RED='\033[0;31m'
@@ -106,7 +107,7 @@ echo ""
 # Semgrep
 print_status "Installing Semgrep..."
 if ! command_exists semgrep; then
-    pip3 install semgrep >/dev/null 2>&1
+    python3 -m pip install --upgrade semgrep 2>&1 | grep -v "WARNING" || true
     print_success "Semgrep installed"
 else
     print_warning "Semgrep already installed"
@@ -124,8 +125,12 @@ fi
 # Bearer
 print_status "Installing Bearer..."
 if ! command_exists bearer; then
-    curl -sfL https://raw.githubusercontent.com/Bearer/bearer/main/contrib/install.sh | sh -s -- -b /usr/local/bin >/dev/null 2>&1
-    print_success "Bearer installed"
+    curl -sfL https://raw.githubusercontent.com/Bearer/bearer/main/contrib/install.sh 2>/dev/null | sh -s -- -b /usr/local/bin 2>&1 | tail -1 || {
+        print_warning "Bearer installation failed, skipping..."
+    }
+    if command_exists bearer; then
+        print_success "Bearer installed"
+    fi
 else
     print_warning "Bearer already installed"
 fi
@@ -133,12 +138,18 @@ fi
 # Graudit
 print_status "Installing Graudit..."
 if ! command_exists graudit; then
-    apt install -y graudit >/dev/null 2>&1 || {
+    apt install -y graudit 2>&1 | grep -v "WARNING" || {
+        print_status "Installing from source..."
         cd /opt
-        git clone https://github.com/wireghoul/graudit.git >/dev/null 2>&1
+        git clone https://github.com/wireghoul/graudit.git 2>&1 | tail -1
         ln -sf /opt/graudit/graudit /usr/local/bin/graudit
+        cd - >/dev/null
     }
-    print_success "Graudit installed"
+    if command_exists graudit; then
+        print_success "Graudit installed"
+    else
+        print_warning "Graudit installation failed"
+    fi
 else
     print_warning "Graudit already installed"
 fi
@@ -146,9 +157,16 @@ fi
 # Gosec
 print_status "Installing Gosec..."
 if ! command_exists gosec; then
-    go install github.com/securego/gosec/v2/cmd/gosec@latest >/dev/null 2>&1
-    ln -sf /root/go/bin/gosec /usr/local/bin/gosec 2>/dev/null || true
-    print_success "Gosec installed"
+    # Set up Go environment
+    export GOPATH=/root/go
+    export PATH=$PATH:$GOPATH/bin
+    go install github.com/securego/gosec/v2/cmd/gosec@latest 2>&1 | tail -1 || true
+    ln -sf $GOPATH/bin/gosec /usr/local/bin/gosec 2>/dev/null || true
+    if command_exists gosec; then
+        print_success "Gosec installed"
+    else
+        print_warning "Gosec installation failed (Go required)"
+    fi
 else
     print_warning "Gosec already installed"
 fi
@@ -182,8 +200,23 @@ echo ""
 # TruffleHog
 print_status "Installing TruffleHog..."
 if ! command_exists trufflehog; then
-    pip3 install truffleHog >/dev/null 2>&1
-    print_success "TruffleHog installed"
+    # Install the newer trufflehog v3 (Go-based version is more reliable)
+    wget -q https://github.com/trufflesecurity/trufflehog/releases/latest/download/trufflehog_linux_amd64.tar.gz 2>/dev/null && {
+        tar -xzf trufflehog_linux_amd64.tar.gz
+        mv trufflehog /usr/local/bin/ 2>/dev/null
+        rm trufflehog_linux_amd64.tar.gz 2>/dev/null
+        chmod +x /usr/local/bin/trufflehog
+    } || {
+        # Fallback to Python version
+        print_warning "Go version failed, trying Python version..."
+        pip3 install truffleHog 2>&1 | grep -v "WARNING" || true
+    }
+
+    if command_exists trufflehog; then
+        print_success "TruffleHog installed"
+    else
+        print_warning "TruffleHog installation failed"
+    fi
 else
     print_warning "TruffleHog already installed"
 fi
@@ -191,12 +224,34 @@ fi
 # Gitleaks
 print_status "Installing Gitleaks..."
 if ! command_exists gitleaks; then
-    GITLEAKS_VERSION=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | grep tag_name | cut -d '"' -f 4)
-    wget -q https://github.com/gitleaks/gitleaks/releases/download/${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION:1}_linux_x64.tar.gz
-    tar -xzf gitleaks_${GITLEAKS_VERSION:1}_linux_x64.tar.gz
-    mv gitleaks /usr/local/bin/
-    rm gitleaks_${GITLEAKS_VERSION:1}_linux_x64.tar.gz
-    print_success "Gitleaks installed"
+    # Try to get latest version, fallback to direct install
+    GITLEAKS_VERSION=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest 2>/dev/null | grep -o '"tag_name": "v[^"]*"' | cut -d'"' -f4)
+
+    if [ -z "$GITLEAKS_VERSION" ]; then
+        print_warning "Could not fetch latest version, using fallback method..."
+        # Fallback: use apt if available or install from alternative source
+        apt install -y gitleaks 2>&1 | grep -v "WARNING" || {
+            # Alternative: Install using go
+            go install github.com/gitleaks/gitleaks/v8@latest 2>&1 | tail -1 || true
+            ln -sf /root/go/bin/gitleaks /usr/local/bin/gitleaks 2>/dev/null || true
+        }
+    else
+        wget -q https://github.com/gitleaks/gitleaks/releases/download/${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION:1}_linux_x64.tar.gz 2>/dev/null || {
+            print_warning "Download failed, trying alternative method..."
+            apt install -y gitleaks 2>&1 | grep -v "WARNING" || true
+        }
+        if [ -f "gitleaks_${GITLEAKS_VERSION:1}_linux_x64.tar.gz" ]; then
+            tar -xzf gitleaks_${GITLEAKS_VERSION:1}_linux_x64.tar.gz
+            mv gitleaks /usr/local/bin/ 2>/dev/null || true
+            rm gitleaks_${GITLEAKS_VERSION:1}_linux_x64.tar.gz 2>/dev/null || true
+        fi
+    fi
+
+    if command_exists gitleaks; then
+        print_success "Gitleaks installed"
+    else
+        print_warning "Gitleaks installation failed"
+    fi
 else
     print_warning "Gitleaks already installed"
 fi
@@ -223,14 +278,38 @@ print_success "npm audit available (comes with npm)"
 
 # OWASP Dependency-Check
 print_status "Installing OWASP Dependency-Check..."
-if ! command_exists dependency-check; then
+if ! command_exists dependency-check.sh; then
     cd /opt
-    DEPCHECK_VERSION=$(curl -s https://jeremylong.github.io/DependencyCheck/current.txt)
-    wget -q https://github.com/jeremylong/DependencyCheck/releases/download/v${DEPCHECK_VERSION}/dependency-check-${DEPCHECK_VERSION}-release.zip
-    unzip -q dependency-check-${DEPCHECK_VERSION}-release.zip
-    rm dependency-check-${DEPCHECK_VERSION}-release.zip
-    ln -sf /opt/dependency-check/bin/dependency-check.sh /usr/local/bin/dependency-check.sh
-    print_success "OWASP Dependency-Check installed"
+    # Try to get version, with fallback
+    DEPCHECK_VERSION=$(curl -s https://jeremylong.github.io/DependencyCheck/current.txt 2>/dev/null)
+
+    if [ -z "$DEPCHECK_VERSION" ]; then
+        # Fallback: Try to get from GitHub API
+        DEPCHECK_VERSION=$(curl -s https://api.github.com/repos/jeremylong/DependencyCheck/releases/latest 2>/dev/null | grep -o '"tag_name": "v[^"]*"' | cut -d'"' -f4 | sed 's/v//')
+    fi
+
+    if [ -z "$DEPCHECK_VERSION" ]; then
+        print_warning "Could not determine version, using v9.0.9 as fallback..."
+        DEPCHECK_VERSION="9.0.9"
+    fi
+
+    print_status "Downloading Dependency-Check v${DEPCHECK_VERSION}..."
+    wget -q --show-progress https://github.com/jeremylong/DependencyCheck/releases/download/v${DEPCHECK_VERSION}/dependency-check-${DEPCHECK_VERSION}-release.zip 2>&1 | tail -2 || {
+        print_warning "Download failed, skipping..."
+        cd - >/dev/null
+        return
+    }
+
+    if [ -f "dependency-check-${DEPCHECK_VERSION}-release.zip" ]; then
+        unzip -q dependency-check-${DEPCHECK_VERSION}-release.zip
+        rm dependency-check-${DEPCHECK_VERSION}-release.zip
+        chmod +x /opt/dependency-check/bin/dependency-check.sh
+        ln -sf /opt/dependency-check/bin/dependency-check.sh /usr/local/bin/dependency-check.sh
+        print_success "OWASP Dependency-Check installed"
+    else
+        print_warning "OWASP Dependency-Check installation failed"
+    fi
+    cd - >/dev/null
 else
     print_warning "OWASP Dependency-Check already installed"
 fi
@@ -264,8 +343,20 @@ fi
 # tfsec
 print_status "Installing tfsec..."
 if ! command_exists tfsec; then
-    curl -s https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash >/dev/null 2>&1
-    print_success "tfsec installed"
+    # Try official installation script
+    curl -s https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh 2>/dev/null | bash 2>&1 | tail -1 || {
+        print_warning "Official script failed, trying alternative..."
+        # Fallback: Try apt or go install
+        apt install -y tfsec 2>&1 | grep -v "WARNING" || {
+            go install github.com/aquasecurity/tfsec/cmd/tfsec@latest 2>&1 | tail -1 || true
+            ln -sf /root/go/bin/tfsec /usr/local/bin/tfsec 2>/dev/null || true
+        }
+    }
+    if command_exists tfsec; then
+        print_success "tfsec installed"
+    else
+        print_warning "tfsec installation failed"
+    fi
 else
     print_warning "tfsec already installed"
 fi
@@ -273,12 +364,27 @@ fi
 # Trivy
 print_status "Installing Trivy..."
 if ! command_exists trivy; then
-    apt install -y wget apt-transport-https gnupg lsb-release >/dev/null 2>&1
-    wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | apt-key add -
-    echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | tee -a /etc/apt/sources.list.d/trivy.list
-    apt update -qq
-    apt install -y trivy >/dev/null 2>&1
-    print_success "Trivy installed"
+    # Install dependencies
+    apt install -y wget apt-transport-https gnupg lsb-release 2>&1 | grep -v "WARNING" || true
+
+    # Try new method (without deprecated apt-key)
+    wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key 2>/dev/null | gpg --dearmor -o /usr/share/keyrings/trivy.gpg 2>/dev/null || {
+        # Fallback to old method
+        wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key 2>/dev/null | apt-key add - 2>&1 | tail -1 || true
+    }
+
+    echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | tee /etc/apt/sources.list.d/trivy.list >/dev/null 2>&1 || {
+        echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | tee /etc/apt/sources.list.d/trivy.list >/dev/null 2>&1
+    }
+
+    apt update -qq 2>&1 | tail -1
+    apt install -y trivy 2>&1 | grep -v "WARNING" || print_warning "Trivy installation failed"
+
+    if command_exists trivy; then
+        print_success "Trivy installed"
+    else
+        print_warning "Trivy installation failed"
+    fi
 else
     print_warning "Trivy already installed"
 fi
@@ -367,12 +473,18 @@ echo -e "${BLUE}Installing Python dependencies for MCP server...${NC}"
 echo ""
 
 print_status "Installing Flask and dependencies..."
-pip3 install flask python-dotenv requests >/dev/null 2>&1
+python3 -m pip install --upgrade flask python-dotenv requests 2>&1 | grep -v "WARNING" | grep -v "already satisfied" | tail -3 || true
 print_success "Flask and dependencies installed"
 
 print_status "Installing MCP SDK..."
-pip3 install mcp >/dev/null 2>&1
-print_success "MCP SDK installed"
+python3 -m pip install --upgrade mcp 2>&1 | grep -v "WARNING" | grep -v "already satisfied" | tail -3 || {
+    print_warning "MCP SDK installation had warnings, but may still work"
+}
+if python3 -c "import mcp" 2>/dev/null; then
+    print_success "MCP SDK installed and verified"
+else
+    print_warning "MCP SDK may need manual verification"
+fi
 
 ################################################################################
 # VERIFICATION
@@ -423,9 +535,16 @@ done
 
 echo ""
 echo -e "${BLUE}=================================${NC}"
-echo -e "${GREEN}Installed: $INSTALLED${NC}"
+echo -e "${GREEN}Installed: $INSTALLED / $(( ${#TOOLS[@]} ))${NC}"
 if [ $FAILED -gt 0 ]; then
     echo -e "${RED}Failed: $FAILED${NC}"
+    echo ""
+    echo -e "${YELLOW}Failed tools:${NC}"
+    for tool in "${TOOLS[@]}"; do
+        if ! command_exists "$tool"; then
+            echo "  - $tool"
+        fi
+    done
 fi
 echo -e "${BLUE}=================================${NC}"
 
@@ -434,23 +553,36 @@ echo -e "${BLUE}=================================${NC}"
 ################################################################################
 
 echo ""
-echo -e "${GREEN}Installation Complete!${NC}"
+if [ $FAILED -eq 0 ]; then
+    echo -e "${GREEN}✓ Installation Complete! All tools installed successfully.${NC}"
+else
+    echo -e "${YELLOW}⚠ Installation Complete with warnings.${NC}"
+    echo -e "${YELLOW}Some tools failed to install but the server can still function.${NC}"
+fi
 echo ""
 echo -e "${YELLOW}Next Steps:${NC}"
 echo "1. Copy .env.example to .env and configure your settings"
-echo "   cp .env.example .env"
-echo "   nano .env"
+echo "   ${BLUE}cp .env.example .env${NC}"
+echo "   ${BLUE}nano .env${NC}"
 echo ""
 echo "2. Start the SAST server:"
-echo "   python3 sast_server.py --port 6000"
+echo "   ${BLUE}python3 sast_server.py --port 6000${NC}"
 echo ""
 echo "3. Test the server:"
-echo "   curl http://localhost:6000/health"
+echo "   ${BLUE}curl http://localhost:6000/health${NC}"
 echo ""
-echo -e "${YELLOW}Notes:${NC}"
+echo -e "${YELLOW}Important Notes:${NC}"
 echo "- Some tools may require additional configuration"
-echo "- Snyk requires authentication: snyk auth"
-echo "- WPScan API token recommended: https://wpscan.com/api"
+echo "- Snyk requires authentication: ${BLUE}snyk auth${NC}"
+echo "- WPScan API token recommended: ${BLUE}https://wpscan.com/api${NC}"
 echo "- ClamAV virus definitions update automatically"
 echo ""
+if [ $FAILED -gt 0 ]; then
+    echo -e "${YELLOW}Troubleshooting Failed Tools:${NC}"
+    echo "- Check internet connection and firewall settings"
+    echo "- Some tools may need manual installation from official docs"
+    echo "- Run the script again - some failures may be temporary"
+    echo "- Check the error messages above for specific issues"
+    echo ""
+fi
 echo -e "${BLUE}Happy Scanning! 🔒${NC}"
