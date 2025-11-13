@@ -292,6 +292,30 @@ Scan F:/work/MyProject with ClamAV antivirus to detect malware
 
 ## Tool Installation
 
+### Quick Installation (Recommended)
+
+We provide an automated installation script that installs all required tools:
+
+```bash
+# On your Kali Linux machine
+cd /path/to/sast-mcp
+sudo bash install_tools.sh
+```
+
+The script will:
+- ✅ Update system packages
+- ✅ Install Python, Node.js, Ruby, and Go
+- ✅ Install all 23+ security tools automatically
+- ✅ Install Python dependencies (Flask, MCP SDK)
+- ✅ Verify all installations
+- ✅ Show you next steps
+
+**Installation takes 5-15 minutes depending on your internet speed.**
+
+### Manual Installation
+
+If you prefer to install tools manually:
+
 ### Installing Security Tools on Kali Linux
 
 Many tools come pre-installed on Kali Linux. For missing tools:
