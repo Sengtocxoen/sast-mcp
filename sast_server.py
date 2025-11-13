@@ -1213,23 +1213,33 @@ def nikto():
         if not target:
             return jsonify({"error": "Target parameter is required"}), 400
 
+        # Resolve output file path if specified
+        resolved_output_file = ""
+        if output_file:
+            resolved_output_file = resolve_windows_path(output_file)
+
         command = f"nikto -h {target} -p {port}"
 
         if ssl:
             command += " -ssl"
 
-        if output_file:
-            command += f" -Format {output_format} -output {output_file}"
+        if resolved_output_file:
+            command += f" -Format {output_format} -output {resolved_output_file}"
 
         if additional_args:
             command += f" {additional_args}"
 
         result = execute_command(command, timeout=600)
 
+        # Add path info
+        if output_file:
+            result["output_file_original"] = output_file
+            result["output_file_resolved"] = resolved_output_file
+
         # Read output file if specified
-        if output_file and os.path.exists(output_file):
+        if resolved_output_file and os.path.exists(resolved_output_file):
             try:
-                with open(output_file, 'r') as f:
+                with open(resolved_output_file, 'r') as f:
                     result["file_content"] = f.read()
             except Exception as e:
                 logger.warning(f"Error reading output file: {e}")
@@ -1268,18 +1278,23 @@ def nmap():
         if not target:
             return jsonify({"error": "Target parameter is required"}), 400
 
+        # Resolve output file path if specified
+        resolved_output_file = ""
+        if output_file:
+            resolved_output_file = resolve_windows_path(output_file)
+
         command = f"nmap {scan_type}"
 
         if ports:
             command += f" -p {ports}"
 
-        if output_file:
+        if resolved_output_file:
             if output_format == "xml":
-                command += f" -oX {output_file}"
+                command += f" -oX {resolved_output_file}"
             elif output_format == "grepable":
-                command += f" -oG {output_file}"
+                command += f" -oG {resolved_output_file}"
             else:
-                command += f" -oN {output_file}"
+                command += f" -oN {resolved_output_file}"
 
         if additional_args:
             command += f" {additional_args}"
@@ -1288,10 +1303,15 @@ def nmap():
 
         result = execute_command(command, timeout=900)
 
+        # Add path info
+        if output_file:
+            result["output_file_original"] = output_file
+            result["output_file_resolved"] = resolved_output_file
+
         # Read output file if specified
-        if output_file and os.path.exists(output_file):
+        if resolved_output_file and os.path.exists(resolved_output_file):
             try:
-                with open(output_file, 'r') as f:
+                with open(resolved_output_file, 'r') as f:
                     result["file_content"] = f.read()
             except Exception as e:
                 logger.warning(f"Error reading output file: {e}")
@@ -1332,6 +1352,11 @@ def sqlmap():
         if not target:
             return jsonify({"error": "Target parameter is required"}), 400
 
+        # Resolve output directory path if specified
+        resolved_output_dir = ""
+        if output_dir:
+            resolved_output_dir = resolve_windows_path(output_dir)
+
         command = f"sqlmap -u '{target}' --level={level} --risk={risk}"
 
         if batch:
@@ -1343,13 +1368,19 @@ def sqlmap():
         if cookie:
             command += f" --cookie='{cookie}'"
 
-        if output_dir:
-            command += f" --output-dir={output_dir}"
+        if resolved_output_dir:
+            command += f" --output-dir={resolved_output_dir}"
 
         if additional_args:
             command += f" {additional_args}"
 
         result = execute_command(command, timeout=900)
+
+        # Add path info
+        if output_dir:
+            result["output_dir_original"] = output_dir
+            result["output_dir_resolved"] = resolved_output_dir
+
         return jsonify(result)
     except Exception as e:
         logger.error(f"Error in sqlmap endpoint: {str(e)}")
@@ -1380,6 +1411,11 @@ def wpscan():
         if not target:
             return jsonify({"error": "Target parameter is required"}), 400
 
+        # Resolve output file path if specified
+        resolved_output_file = ""
+        if output_file:
+            resolved_output_file = resolve_windows_path(output_file)
+
         command = f"wpscan --url {target}"
 
         if enumerate:
@@ -1388,18 +1424,23 @@ def wpscan():
         if api_token:
             command += f" --api-token {api_token}"
 
-        if output_file:
-            command += f" --output {output_file} --format json"
+        if resolved_output_file:
+            command += f" --output {resolved_output_file} --format json"
 
         if additional_args:
             command += f" {additional_args}"
 
         result = execute_command(command, timeout=600)
 
+        # Add path info
+        if output_file:
+            result["output_file_original"] = output_file
+            result["output_file_resolved"] = resolved_output_file
+
         # Read output file if specified
-        if output_file and os.path.exists(output_file):
+        if resolved_output_file and os.path.exists(resolved_output_file):
             try:
-                with open(output_file, 'r') as f:
+                with open(resolved_output_file, 'r') as f:
                     result["parsed_output"] = json.load(f)
             except Exception as e:
                 logger.warning(f"Error reading output file: {e}")
@@ -1434,23 +1475,33 @@ def dirb():
         if not target:
             return jsonify({"error": "Target parameter is required"}), 400
 
+        # Resolve output file path if specified
+        resolved_output_file = ""
+        if output_file:
+            resolved_output_file = resolve_windows_path(output_file)
+
         command = f"dirb {target} {wordlist}"
 
         if extensions:
             command += f" -X {extensions}"
 
-        if output_file:
-            command += f" -o {output_file}"
+        if resolved_output_file:
+            command += f" -o {resolved_output_file}"
 
         if additional_args:
             command += f" {additional_args}"
 
         result = execute_command(command, timeout=900)
 
+        # Add path info
+        if output_file:
+            result["output_file_original"] = output_file
+            result["output_file_resolved"] = resolved_output_file
+
         # Read output file if specified
-        if output_file and os.path.exists(output_file):
+        if resolved_output_file and os.path.exists(resolved_output_file):
             try:
-                with open(output_file, 'r') as f:
+                with open(resolved_output_file, 'r') as f:
                     result["file_content"] = f.read()
             except Exception as e:
                 logger.warning(f"Error reading output file: {e}")
@@ -1485,39 +1536,59 @@ def lynis():
         additional_args = params.get("additional_args", "")
 
         # Resolve path if provided
+        resolved_target = ""
         if target:
-            target = resolve_windows_path(target)
+            resolved_target = resolve_windows_path(target)
+
+        # Resolve log/report file paths if provided
+        resolved_log_file = ""
+        resolved_report_file = ""
+        if log_file:
+            resolved_log_file = resolve_windows_path(log_file)
+        if report_file:
+            resolved_report_file = resolve_windows_path(report_file)
 
         command = f"lynis audit {audit_mode}"
 
-        if audit_mode == "dockerfile" and target:
-            command += f" {target}"
+        if audit_mode == "dockerfile" and resolved_target:
+            command += f" {resolved_target}"
 
         if quick:
             command += " --quick"
 
-        if log_file:
-            command += f" --logfile {log_file}"
+        if resolved_log_file:
+            command += f" --logfile {resolved_log_file}"
 
-        if report_file:
-            command += f" --report-file {report_file}"
+        if resolved_report_file:
+            command += f" --report-file {resolved_report_file}"
 
         if additional_args:
             command += f" {additional_args}"
 
         result = execute_command(command, timeout=600)
 
+        # Add path info
+        if target:
+            result["target_original"] = target
+            result["target_resolved"] = resolved_target
+        if log_file:
+            result["log_file_original"] = log_file
+            result["log_file_resolved"] = resolved_log_file
+        if report_file:
+            result["report_file_original"] = report_file
+            result["report_file_resolved"] = resolved_report_file
+
         # Read log/report files if specified
-        if log_file and os.path.exists(log_file):
+        if resolved_log_file and os.path.exists(resolved_log_file):
             try:
-                with open(log_file, 'r') as f:
+                with open(resolved_log_file, 'r') as f:
                     result["log_content"] = f.read()
             except Exception as e:
                 logger.warning(f"Error reading log file: {e}")
 
-        if report_file and os.path.exists(report_file):
+        if resolved_report_file and os.path.exists(resolved_report_file):
             try:
-                with open(report_file, 'r') as f:
+                with open(resolved_report_file, 'r') as f:
                     result["report_content"] = f.read()
             except Exception as e:
                 logger.warning(f"Error reading report file: {e}")
@@ -1554,6 +1625,11 @@ def snyk():
         # Resolve Windows path to Linux mount path
         resolved_target = resolve_windows_path(target)
 
+        # Resolve output file path if specified
+        resolved_output_file = ""
+        if output_file:
+            resolved_output_file = resolve_windows_path(output_file)
+
         command = f"snyk {test_type} {resolved_target}"
 
         if json_output:
@@ -1562,8 +1638,8 @@ def snyk():
         if severity_threshold:
             command += f" --severity-threshold={severity_threshold}"
 
-        if output_file:
-            command += f" > {output_file}"
+        if resolved_output_file:
+            command += f" > {resolved_output_file}"
 
         if additional_args:
             command += f" {additional_args}"
@@ -1573,6 +1649,9 @@ def snyk():
         # Add path resolution info
         result["original_path"] = target
         result["resolved_path"] = resolved_target
+        if output_file:
+            result["output_file_original"] = output_file
+            result["output_file_resolved"] = resolved_output_file
 
         # Parse JSON output
         if json_output and result.get("stdout"):
@@ -1582,9 +1661,9 @@ def snyk():
                 pass
 
         # Read output file if specified
-        if output_file and os.path.exists(output_file):
+        if resolved_output_file and os.path.exists(resolved_output_file):
             try:
-                with open(output_file, 'r') as f:
+                with open(resolved_output_file, 'r') as f:
                     content = f.read()
                     result["file_content"] = content
                     if json_output:
@@ -1628,6 +1707,11 @@ def clamav():
         # Resolve Windows path to Linux mount path
         resolved_target = resolve_windows_path(target)
 
+        # Resolve output file path if specified
+        resolved_output_file = ""
+        if output_file:
+            resolved_output_file = resolve_windows_path(output_file)
+
         command = "clamscan"
 
         if recursive:
@@ -1636,8 +1720,8 @@ def clamav():
         if infected_only:
             command += " -i"
 
-        if output_file:
-            command += f" -l {output_file}"
+        if resolved_output_file:
+            command += f" -l {resolved_output_file}"
 
         if additional_args:
             command += f" {additional_args}"
@@ -1649,11 +1733,14 @@ def clamav():
         # Add path resolution info
         result["original_path"] = target
         result["resolved_path"] = resolved_target
+        if output_file:
+            result["output_file_original"] = output_file
+            result["output_file_resolved"] = resolved_output_file
 
         # Read output file if specified
-        if output_file and os.path.exists(output_file):
+        if resolved_output_file and os.path.exists(resolved_output_file):
             try:
-                with open(output_file, 'r') as f:
+                with open(resolved_output_file, 'r') as f:
                     result["file_content"] = f.read()
             except Exception as e:
                 logger.warning(f"Error reading output file: {e}")
