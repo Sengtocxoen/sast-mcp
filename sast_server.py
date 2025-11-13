@@ -1185,6 +1185,487 @@ def trivy():
 
 
 # ============================================================================
+# ADDITIONAL KALI LINUX SECURITY TOOLS
+# ============================================================================
+
+@app.route("/api/web/nikto", methods=["POST"])
+def nikto():
+    """
+    Execute Nikto web server scanner
+
+    Parameters:
+    - target: Target host (IP or domain)
+    - port: Port to scan (default: 80)
+    - ssl: Use SSL/HTTPS (boolean)
+    - output_format: Output format (txt, html, csv, xml)
+    - output_file: Path to save output file
+    - additional_args: Additional Nikto arguments
+    """
+    try:
+        params = request.json
+        target = params.get("target", "")
+        port = params.get("port", "80")
+        ssl = params.get("ssl", False)
+        output_format = params.get("output_format", "txt")
+        output_file = params.get("output_file", "")
+        additional_args = params.get("additional_args", "")
+
+        if not target:
+            return jsonify({"error": "Target parameter is required"}), 400
+
+        command = f"nikto -h {target} -p {port}"
+
+        if ssl:
+            command += " -ssl"
+
+        if output_file:
+            command += f" -Format {output_format} -output {output_file}"
+
+        if additional_args:
+            command += f" {additional_args}"
+
+        result = execute_command(command, timeout=600)
+
+        # Read output file if specified
+        if output_file and os.path.exists(output_file):
+            try:
+                with open(output_file, 'r') as f:
+                    result["file_content"] = f.read()
+            except Exception as e:
+                logger.warning(f"Error reading output file: {e}")
+
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Error in nikto endpoint: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+
+@app.route("/api/network/nmap", methods=["POST"])
+def nmap():
+    """
+    Execute Nmap network/port scanner
+
+    Parameters:
+    - target: Target host(s) to scan (IP, domain, or CIDR)
+    - scan_type: Scan type (default: -sV for version detection)
+                 Options: -sS (SYN), -sT (TCP Connect), -sU (UDP), -sV (Version),
+                         -sC (Script scan), -A (Aggressive), -sn (Ping scan)
+    - ports: Port specification (e.g., "80,443" or "1-1000")
+    - output_format: Output format (normal, xml, grepable)
+    - output_file: Path to save output
+    - additional_args: Additional Nmap arguments
+    """
+    try:
+        params = request.json
+        target = params.get("target", "")
+        scan_type = params.get("scan_type", "-sV")
+        ports = params.get("ports", "")
+        output_format = params.get("output_format", "normal")
+        output_file = params.get("output_file", "")
+        additional_args = params.get("additional_args", "")
+
+        if not target:
+            return jsonify({"error": "Target parameter is required"}), 400
+
+        command = f"nmap {scan_type}"
+
+        if ports:
+            command += f" -p {ports}"
+
+        if output_file:
+            if output_format == "xml":
+                command += f" -oX {output_file}"
+            elif output_format == "grepable":
+                command += f" -oG {output_file}"
+            else:
+                command += f" -oN {output_file}"
+
+        if additional_args:
+            command += f" {additional_args}"
+
+        command += f" {target}"
+
+        result = execute_command(command, timeout=900)
+
+        # Read output file if specified
+        if output_file and os.path.exists(output_file):
+            try:
+                with open(output_file, 'r') as f:
+                    result["file_content"] = f.read()
+            except Exception as e:
+                logger.warning(f"Error reading output file: {e}")
+
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Error in nmap endpoint: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+
+@app.route("/api/web/sqlmap", methods=["POST"])
+def sqlmap():
+    """
+    Execute SQLMap for SQL injection testing
+
+    Parameters:
+    - target: Target URL to test
+    - data: POST data string
+    - cookie: HTTP Cookie header value
+    - level: Level of tests (1-5, default: 1)
+    - risk: Risk of tests (1-3, default: 1)
+    - batch: Never ask for user input, use default behavior (boolean)
+    - output_dir: Directory to save output files
+    - additional_args: Additional SQLMap arguments
+    """
+    try:
+        params = request.json
+        target = params.get("target", "")
+        data = params.get("data", "")
+        cookie = params.get("cookie", "")
+        level = params.get("level", "1")
+        risk = params.get("risk", "1")
+        batch = params.get("batch", True)
+        output_dir = params.get("output_dir", "")
+        additional_args = params.get("additional_args", "")
+
+        if not target:
+            return jsonify({"error": "Target parameter is required"}), 400
+
+        command = f"sqlmap -u '{target}' --level={level} --risk={risk}"
+
+        if batch:
+            command += " --batch"
+
+        if data:
+            command += f" --data='{data}'"
+
+        if cookie:
+            command += f" --cookie='{cookie}'"
+
+        if output_dir:
+            command += f" --output-dir={output_dir}"
+
+        if additional_args:
+            command += f" {additional_args}"
+
+        result = execute_command(command, timeout=900)
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Error in sqlmap endpoint: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+
+@app.route("/api/web/wpscan", methods=["POST"])
+def wpscan():
+    """
+    Execute WPScan WordPress security scanner
+
+    Parameters:
+    - target: Target WordPress URL
+    - enumerate: What to enumerate (u: users, p: plugins, t: themes, vp: vulnerable plugins)
+    - api_token: WPScan API token for vulnerability data
+    - output_file: Path to save output (JSON format)
+    - additional_args: Additional WPScan arguments
+    """
+    try:
+        params = request.json
+        target = params.get("target", "")
+        enumerate = params.get("enumerate", "vp")
+        api_token = params.get("api_token", "")
+        output_file = params.get("output_file", "")
+        additional_args = params.get("additional_args", "")
+
+        if not target:
+            return jsonify({"error": "Target parameter is required"}), 400
+
+        command = f"wpscan --url {target}"
+
+        if enumerate:
+            command += f" --enumerate {enumerate}"
+
+        if api_token:
+            command += f" --api-token {api_token}"
+
+        if output_file:
+            command += f" --output {output_file} --format json"
+
+        if additional_args:
+            command += f" {additional_args}"
+
+        result = execute_command(command, timeout=600)
+
+        # Read output file if specified
+        if output_file and os.path.exists(output_file):
+            try:
+                with open(output_file, 'r') as f:
+                    result["parsed_output"] = json.load(f)
+            except Exception as e:
+                logger.warning(f"Error reading output file: {e}")
+
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Error in wpscan endpoint: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+
+@app.route("/api/web/dirb", methods=["POST"])
+def dirb():
+    """
+    Execute DIRB web content scanner
+
+    Parameters:
+    - target: Target URL to scan
+    - wordlist: Path to wordlist file (default: /usr/share/dirb/wordlists/common.txt)
+    - extensions: File extensions to check (e.g., "php,html,js")
+    - output_file: Path to save output
+    - additional_args: Additional DIRB arguments
+    """
+    try:
+        params = request.json
+        target = params.get("target", "")
+        wordlist = params.get("wordlist", "/usr/share/dirb/wordlists/common.txt")
+        extensions = params.get("extensions", "")
+        output_file = params.get("output_file", "")
+        additional_args = params.get("additional_args", "")
+
+        if not target:
+            return jsonify({"error": "Target parameter is required"}), 400
+
+        command = f"dirb {target} {wordlist}"
+
+        if extensions:
+            command += f" -X {extensions}"
+
+        if output_file:
+            command += f" -o {output_file}"
+
+        if additional_args:
+            command += f" {additional_args}"
+
+        result = execute_command(command, timeout=900)
+
+        # Read output file if specified
+        if output_file and os.path.exists(output_file):
+            try:
+                with open(output_file, 'r') as f:
+                    result["file_content"] = f.read()
+            except Exception as e:
+                logger.warning(f"Error reading output file: {e}")
+
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Error in dirb endpoint: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+
+@app.route("/api/system/lynis", methods=["POST"])
+def lynis():
+    """
+    Execute Lynis security auditing tool for Unix/Linux systems
+
+    Parameters:
+    - target: Target directory or system to audit (default: system audit)
+    - audit_mode: Audit mode (system, dockerfile)
+    - quick: Quick scan mode (boolean)
+    - log_file: Path to save log file
+    - report_file: Path to save report file
+    - additional_args: Additional Lynis arguments
+    """
+    try:
+        params = request.json
+        target = params.get("target", "")
+        audit_mode = params.get("audit_mode", "system")
+        quick = params.get("quick", False)
+        log_file = params.get("log_file", "")
+        report_file = params.get("report_file", "")
+        additional_args = params.get("additional_args", "")
+
+        # Resolve path if provided
+        if target:
+            target = resolve_windows_path(target)
+
+        command = f"lynis audit {audit_mode}"
+
+        if audit_mode == "dockerfile" and target:
+            command += f" {target}"
+
+        if quick:
+            command += " --quick"
+
+        if log_file:
+            command += f" --logfile {log_file}"
+
+        if report_file:
+            command += f" --report-file {report_file}"
+
+        if additional_args:
+            command += f" {additional_args}"
+
+        result = execute_command(command, timeout=600)
+
+        # Read log/report files if specified
+        if log_file and os.path.exists(log_file):
+            try:
+                with open(log_file, 'r') as f:
+                    result["log_content"] = f.read()
+            except Exception as e:
+                logger.warning(f"Error reading log file: {e}")
+
+        if report_file and os.path.exists(report_file):
+            try:
+                with open(report_file, 'r') as f:
+                    result["report_content"] = f.read()
+            except Exception as e:
+                logger.warning(f"Error reading report file: {e}")
+
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Error in lynis endpoint: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+
+@app.route("/api/dependencies/snyk", methods=["POST"])
+def snyk():
+    """
+    Execute Snyk security scanner for dependencies and containers
+
+    Parameters:
+    - target: Path to project directory (default: current directory)
+    - test_type: Type of test (test, container, iac, code)
+    - severity_threshold: Minimum severity to report (low, medium, high, critical)
+    - json_output: Output in JSON format (boolean)
+    - output_file: Path to save output
+    - additional_args: Additional Snyk arguments
+    """
+    try:
+        params = request.json
+        target = params.get("target", ".")
+        test_type = params.get("test_type", "test")
+        severity_threshold = params.get("severity_threshold", "")
+        json_output = params.get("json_output", True)
+        output_file = params.get("output_file", "")
+        additional_args = params.get("additional_args", "")
+
+        # Resolve Windows path to Linux mount path
+        resolved_target = resolve_windows_path(target)
+
+        command = f"snyk {test_type} {resolved_target}"
+
+        if json_output:
+            command += " --json"
+
+        if severity_threshold:
+            command += f" --severity-threshold={severity_threshold}"
+
+        if output_file:
+            command += f" > {output_file}"
+
+        if additional_args:
+            command += f" {additional_args}"
+
+        result = execute_command(command, timeout=600)
+
+        # Add path resolution info
+        result["original_path"] = target
+        result["resolved_path"] = resolved_target
+
+        # Parse JSON output
+        if json_output and result.get("stdout"):
+            try:
+                result["parsed_output"] = json.loads(result["stdout"])
+            except:
+                pass
+
+        # Read output file if specified
+        if output_file and os.path.exists(output_file):
+            try:
+                with open(output_file, 'r') as f:
+                    content = f.read()
+                    result["file_content"] = content
+                    if json_output:
+                        try:
+                            result["parsed_output"] = json.loads(content)
+                        except:
+                            pass
+            except Exception as e:
+                logger.warning(f"Error reading output file: {e}")
+
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Error in snyk endpoint: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+
+@app.route("/api/malware/clamav", methods=["POST"])
+def clamav():
+    """
+    Execute ClamAV antivirus scanner
+
+    Parameters:
+    - target: Path to file or directory to scan
+    - recursive: Scan directories recursively (boolean)
+    - infected_only: Only show infected files (boolean)
+    - output_file: Path to save scan log
+    - additional_args: Additional ClamAV arguments
+    """
+    try:
+        params = request.json
+        target = params.get("target", "")
+        recursive = params.get("recursive", True)
+        infected_only = params.get("infected_only", False)
+        output_file = params.get("output_file", "")
+        additional_args = params.get("additional_args", "")
+
+        if not target:
+            return jsonify({"error": "Target parameter is required"}), 400
+
+        # Resolve Windows path to Linux mount path
+        resolved_target = resolve_windows_path(target)
+
+        command = "clamscan"
+
+        if recursive:
+            command += " -r"
+
+        if infected_only:
+            command += " -i"
+
+        if output_file:
+            command += f" -l {output_file}"
+
+        if additional_args:
+            command += f" {additional_args}"
+
+        command += f" {resolved_target}"
+
+        result = execute_command(command, timeout=1800)
+
+        # Add path resolution info
+        result["original_path"] = target
+        result["resolved_path"] = resolved_target
+
+        # Read output file if specified
+        if output_file and os.path.exists(output_file):
+            try:
+                with open(output_file, 'r') as f:
+                    result["file_content"] = f.read()
+            except Exception as e:
+                logger.warning(f"Error reading output file: {e}")
+
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Error in clamav endpoint: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+
+# ============================================================================
 # UTILITY ENDPOINTS
 # ============================================================================
 
@@ -1222,7 +1703,7 @@ def health_check():
         "gitleaks": "gitleaks version"
     }
 
-    # Additional tools
+    # Additional SAST tools
     additional_tools = {
         "bearer": "bearer version",
         "graudit": "which graudit",
@@ -1232,6 +1713,18 @@ def health_check():
         "tfsec": "tfsec --version",
         "trivy": "trivy --version",
         "dependency-check": "dependency-check.sh --version"
+    }
+
+    # Kali Linux security tools
+    kali_tools = {
+        "nikto": "nikto -Version",
+        "nmap": "nmap --version",
+        "sqlmap": "sqlmap --version",
+        "wpscan": "wpscan --version",
+        "dirb": "which dirb",
+        "lynis": "lynis --version",
+        "snyk": "snyk --version",
+        "clamscan": "clamscan --version"
     }
 
     tools_status = {}
@@ -1252,9 +1745,18 @@ def health_check():
         except:
             tools_status[tool] = False
 
+    # Check Kali tools
+    for tool, check_cmd in kali_tools.items():
+        try:
+            result = execute_command(check_cmd, timeout=10)
+            tools_status[tool] = result["success"]
+        except:
+            tools_status[tool] = False
+
     all_essential_available = all([tools_status.get(tool, False) for tool in essential_tools.keys()])
     available_count = sum(1 for available in tools_status.values() if available)
     total_count = len(tools_status)
+    kali_tools_count = sum(1 for tool in kali_tools.keys() if tools_status.get(tool, False))
 
     return jsonify({
         "status": "healthy",
@@ -1263,7 +1765,9 @@ def health_check():
         "all_essential_tools_available": all_essential_available,
         "total_tools_available": available_count,
         "total_tools_count": total_count,
-        "version": "1.0.0"
+        "kali_tools_available": kali_tools_count,
+        "kali_tools_total": len(kali_tools),
+        "version": "2.0.0"
     })
 
 
@@ -1287,6 +1791,7 @@ if __name__ == "__main__":
         API_PORT = args.port
 
     logger.info(f"Starting SAST Tools API Server on port {API_PORT}")
-    logger.info("Supported tools: Semgrep, Bearer, Graudit, Bandit, Gosec, Brakeman, ESLint, TruffleHog, Gitleaks, Safety, npm audit, Checkov, tfsec, Trivy, OWASP Dependency-Check")
+    logger.info("Supported SAST tools: Semgrep, Bearer, Graudit, Bandit, Gosec, Brakeman, ESLint, TruffleHog, Gitleaks, Safety, npm audit, Checkov, tfsec, Trivy, OWASP Dependency-Check")
+    logger.info("Supported Kali tools: Nikto, Nmap, SQLMap, WPScan, DIRB, Lynis, Snyk, ClamAV")
 
     app.run(host="0.0.0.0", port=API_PORT, debug=DEBUG_MODE)
