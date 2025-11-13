@@ -292,6 +292,30 @@ Scan F:/work/MyProject with ClamAV antivirus to detect malware
 
 ## Tool Installation
 
+### Quick Installation (Recommended)
+
+We provide an automated installation script that installs all required tools:
+
+```bash
+# On your Kali Linux machine
+cd /path/to/sast-mcp
+sudo bash install_tools.sh
+```
+
+The script will:
+- ✅ Update system packages
+- ✅ Install Python, Node.js, Ruby, and Go
+- ✅ Install all 23+ security tools automatically
+- ✅ Install Python dependencies (Flask, MCP SDK)
+- ✅ Verify all installations
+- ✅ Show you next steps
+
+**Installation takes 5-15 minutes depending on your internet speed.**
+
+### Manual Installation
+
+If you prefer to install tools manually:
+
 ### Installing Security Tools on Kali Linux
 
 Many tools come pre-installed on Kali Linux. For missing tools:
@@ -411,16 +435,44 @@ API_PORT=6000
 # Debug Mode (default: 0)
 DEBUG_MODE=0
 
-# Command Timeout in seconds (default: 3600)
+# Command Timeout in seconds (default: 3600 / 1 hour)
 COMMAND_TIMEOUT=3600
 
-# Max timeout limit (default: 7200)
-MAX_TIMEOUT=7200
+# Max timeout limit (default: 86400 / 24 hours)
+# For scans that take days, increase this value
+# Examples: 259200 (3 days), 604800 (1 week)
+MAX_TIMEOUT=86400
+
+# Tool-Specific Timeouts (in seconds)
+# Customize timeout for each security tool based on your needs
+NIKTO_TIMEOUT=3600        # Web server scanning
+NMAP_TIMEOUT=7200         # Network/port scanning
+SQLMAP_TIMEOUT=7200       # SQL injection testing
+WPSCAN_TIMEOUT=3600       # WordPress scanning
+DIRB_TIMEOUT=7200         # Web content discovery
+LYNIS_TIMEOUT=1800        # System auditing
+SNYK_TIMEOUT=3600         # Dependency scanning
+CLAMAV_TIMEOUT=14400      # Malware scanning (4 hours)
+SEMGREP_TIMEOUT=7200      # Code analysis
+BANDIT_TIMEOUT=1800       # Python security
+TRUFFLEHOG_TIMEOUT=3600   # Secret detection
 
 # Path Mapping (for Windows/Linux cross-platform)
 MOUNT_POINT=/mnt/work
 WINDOWS_BASE=F:/work
 ```
+
+**Timeout Configuration Tips:**
+
+For large-scale or comprehensive security scans, you may need to increase timeouts:
+
+- **Large codebases (>100K LOC)**: Increase `SEMGREP_TIMEOUT` to 14400 (4 hours)
+- **Full network scans**: Set `NMAP_TIMEOUT` to 28800 (8 hours) or higher
+- **Thorough SQL injection testing**: Use `SQLMAP_TIMEOUT` of 21600 (6 hours)
+- **Complete malware scans**: Set `CLAMAV_TIMEOUT` to 43200 (12 hours)
+- **Multi-day scans**: Increase `MAX_TIMEOUT` to 259200 (3 days) or more
+
+The server saves partial results if a scan times out, so you won't lose all data.
 
 **Using environment variables directly:**
 
