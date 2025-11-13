@@ -95,7 +95,20 @@ logger = logging.getLogger(__name__)
 API_PORT = int(os.environ.get("API_PORT", 6000))
 DEBUG_MODE = os.environ.get("DEBUG_MODE", "0").lower() in ("1", "true", "yes", "y")
 COMMAND_TIMEOUT = int(os.environ.get("COMMAND_TIMEOUT", 3600))  # 1 hour default
-MAX_TIMEOUT = 7200  # 2 hours maximum
+MAX_TIMEOUT = int(os.environ.get("MAX_TIMEOUT", 86400))  # 24 hours default (was 2 hours)
+
+# Tool-specific timeouts (in seconds) - configurable via environment
+NIKTO_TIMEOUT = int(os.environ.get("NIKTO_TIMEOUT", 3600))        # 1 hour
+NMAP_TIMEOUT = int(os.environ.get("NMAP_TIMEOUT", 7200))          # 2 hours
+SQLMAP_TIMEOUT = int(os.environ.get("SQLMAP_TIMEOUT", 7200))      # 2 hours
+WPSCAN_TIMEOUT = int(os.environ.get("WPSCAN_TIMEOUT", 3600))      # 1 hour
+DIRB_TIMEOUT = int(os.environ.get("DIRB_TIMEOUT", 7200))          # 2 hours
+LYNIS_TIMEOUT = int(os.environ.get("LYNIS_TIMEOUT", 1800))        # 30 minutes
+SNYK_TIMEOUT = int(os.environ.get("SNYK_TIMEOUT", 3600))          # 1 hour
+CLAMAV_TIMEOUT = int(os.environ.get("CLAMAV_TIMEOUT", 14400))     # 4 hours
+SEMGREP_TIMEOUT = int(os.environ.get("SEMGREP_TIMEOUT", 7200))    # 2 hours
+BANDIT_TIMEOUT = int(os.environ.get("BANDIT_TIMEOUT", 1800))      # 30 minutes
+TRUFFLEHOG_TIMEOUT = int(os.environ.get("TRUFFLEHOG_TIMEOUT", 3600))  # 1 hour
 
 # Path Resolution Configuration
 # These settings enable cross-platform operation (Windows client -> Linux server)
@@ -389,7 +402,7 @@ def semgrep():
 
         command += f" {resolved_target}"
 
-        result = execute_command(command, timeout=3600)
+        result = execute_command(command, timeout=SEMGREP_TIMEOUT)
 
         # Add path resolution info to result
         result["original_path"] = target
@@ -549,7 +562,7 @@ def bandit():
         if additional_args:
             command += f" {additional_args}"
 
-        result = execute_command(command, timeout=300)
+        result = execute_command(command, timeout=BANDIT_TIMEOUT)
 
         # Add path resolution info to result
         result["original_path"] = target
@@ -775,7 +788,7 @@ def trufflehog():
         if additional_args:
             command += f" {additional_args}"
 
-        result = execute_command(command, timeout=600)
+        result = execute_command(command, timeout=TRUFFLEHOG_TIMEOUT)
 
         # Add path resolution info to result
         result["original_path"] = target
@@ -1229,7 +1242,7 @@ def nikto():
         if additional_args:
             command += f" {additional_args}"
 
-        result = execute_command(command, timeout=600)
+        result = execute_command(command, timeout=NIKTO_TIMEOUT)
 
         # Add path info
         if output_file:
@@ -1301,7 +1314,7 @@ def nmap():
 
         command += f" {target}"
 
-        result = execute_command(command, timeout=900)
+        result = execute_command(command, timeout=NMAP_TIMEOUT)
 
         # Add path info
         if output_file:
@@ -1374,7 +1387,7 @@ def sqlmap():
         if additional_args:
             command += f" {additional_args}"
 
-        result = execute_command(command, timeout=900)
+        result = execute_command(command, timeout=SQLMAP_TIMEOUT)
 
         # Add path info
         if output_dir:
@@ -1430,7 +1443,7 @@ def wpscan():
         if additional_args:
             command += f" {additional_args}"
 
-        result = execute_command(command, timeout=600)
+        result = execute_command(command, timeout=WPSCAN_TIMEOUT)
 
         # Add path info
         if output_file:
@@ -1491,7 +1504,7 @@ def dirb():
         if additional_args:
             command += f" {additional_args}"
 
-        result = execute_command(command, timeout=900)
+        result = execute_command(command, timeout=DIRB_TIMEOUT)
 
         # Add path info
         if output_file:
@@ -1565,7 +1578,7 @@ def lynis():
         if additional_args:
             command += f" {additional_args}"
 
-        result = execute_command(command, timeout=600)
+        result = execute_command(command, timeout=LYNIS_TIMEOUT)
 
         # Add path info
         if target:
@@ -1644,7 +1657,7 @@ def snyk():
         if additional_args:
             command += f" {additional_args}"
 
-        result = execute_command(command, timeout=600)
+        result = execute_command(command, timeout=SNYK_TIMEOUT)
 
         # Add path resolution info
         result["original_path"] = target
@@ -1728,7 +1741,7 @@ def clamav():
 
         command += f" {resolved_target}"
 
-        result = execute_command(command, timeout=1800)
+        result = execute_command(command, timeout=CLAMAV_TIMEOUT)
 
         # Add path resolution info
         result["original_path"] = target
