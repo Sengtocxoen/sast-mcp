@@ -312,6 +312,8 @@ The script will:
 
 **Installation takes 5-15 minutes depending on your internet speed.**
 
+**⚠ Having installation issues?** Check [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for solutions to common problems like stuck downloads, version conflicts, or outdated vendor links.
+
 ### Manual Installation
 
 If you prefer to install tools manually:
@@ -459,7 +461,7 @@ TRUFFLEHOG_TIMEOUT=3600   # Secret detection
 
 # Path Mapping (for Windows/Linux cross-platform)
 MOUNT_POINT=/mnt/work
-WINDOWS_BASE=F:/work
+WINDOWS_BASE=F:/
 ```
 
 **Timeout Configuration Tips:**
@@ -480,7 +482,7 @@ The server saves partial results if a scan times out, so you won't lose all data
 export API_PORT=6000
 export DEBUG_MODE=1
 export MOUNT_POINT=/mnt/work
-export WINDOWS_BASE=F:/work
+export WINDOWS_BASE=F:/
 ```
 
 ### Client Configuration (config.example.json)
@@ -496,8 +498,11 @@ Simply copy the appropriate configuration to your `.claude.json` and update the 
 
 The server automatically resolves Windows paths to Linux mount paths:
 
-- `F:/work/Project` → `/mnt/work/Project`
-- `F:\work\Project` → `/mnt/work/Project`
+- `F:/MyProject/file.txt` → `/mnt/work/MyProject/file.txt`
+- `F:\work\Project\scan.json` → `/mnt/work/work/Project/scan.json`
+- `F:/scan-results.txt` → `/mnt/work/scan-results.txt`
+
+Default mapping: **F:/ (Windows) ↔ /mnt/work (Linux)**
 
 Configure your mount point using environment variables if different.
 
