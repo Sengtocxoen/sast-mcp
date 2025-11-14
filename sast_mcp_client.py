@@ -177,11 +177,15 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
         lang: str = "",
         severity: str = "",
         output_format: str = "json",
+        output_file: str = "",
         additional_args: str = ""
     ) -> Dict[str, Any]:
         """
         Execute Semgrep static analysis for finding security vulnerabilities and code issues.
         Semgrep supports 30+ languages including Python, JavaScript, Java, Go, Ruby, PHP, etc.
+
+        ⚠️ IMPORTANT: For large codebases, use output_file parameter to save results to a file
+        and avoid token limit errors (25,000 token max). Results are automatically summarized.
 
         Args:
             target: Path to code directory or file to scan (default: current directory)
@@ -197,10 +201,21 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             lang: Filter by language (python, javascript, typescript, go, java, ruby, php, etc.)
             severity: Filter by severity level (ERROR, WARNING, INFO)
             output_format: Output format (json, sarif, text, gitlab-sast)
+            output_file: Path to save results (e.g., "F:/scan-results/semgrep.json")
+                        RECOMMENDED for large projects to avoid token limits
             additional_args: Additional Semgrep command-line arguments
 
         Returns:
-            Scan results with identified security issues and code quality problems
+            If output_file specified: Summary with file location and stats
+            If no output_file: Full scan results (may exceed token limits for large projects)
+
+        Example:
+            # Save to file (recommended for large projects)
+            semgrep_scan(
+                target="/f/work/MyProject",
+                config="auto",
+                output_file="F:/scan-results/semgrep.json"
+            )
         """
         data = {
             "target": target,
@@ -208,6 +223,7 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             "lang": lang,
             "severity": severity,
             "output_format": output_format,
+            "output_file": output_file,
             "additional_args": additional_args
         }
         return sast_client.safe_post("api/sast/semgrep", data)
@@ -285,28 +301,41 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
         severity_level: str = "",
         confidence_level: str = "",
         format: str = "json",
+        output_file: str = "",
         additional_args: str = ""
     ) -> Dict[str, Any]:
         """
         Execute Bandit security scanner for Python code.
         Identifies common security issues in Python applications.
 
+        ⚠️ IMPORTANT: For large Python projects, use output_file parameter to avoid token limits.
+
         Args:
             target: Path to Python code directory or file (default: current directory)
             severity_level: Minimum severity to report (low, medium, high)
             confidence_level: Minimum confidence to report (low, medium, high)
             format: Output format (json, csv, txt, html, xml)
+            output_file: Path to save results (e.g., "F:/scan-results/bandit.json")
+                        RECOMMENDED for large projects to avoid token limits
             additional_args: Additional Bandit arguments
 
         Returns:
             Python security issues including SQL injection, hardcoded passwords,
-            insecure random usage, etc.
+            insecure random usage, etc. If output_file specified, returns summary only.
+
+        Example:
+            bandit_scan(
+                target="/f/work/MyPythonProject",
+                severity_level="medium",
+                output_file="F:/scan-results/bandit.json"
+            )
         """
         data = {
             "target": target,
             "severity_level": severity_level,
             "confidence_level": confidence_level,
             "format": format,
+            "output_file": output_file,
             "additional_args": additional_args
         }
         return sast_client.safe_post("api/sast/bandit", data)
@@ -412,27 +441,41 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
         scan_type: str = "filesystem",
         json_output: bool = True,
         only_verified: bool = False,
+        output_file: str = "",
         additional_args: str = ""
     ) -> Dict[str, Any]:
         """
         Execute TruffleHog for finding leaked secrets, credentials, and API keys.
         Scans git history, filesystems, and cloud storage for exposed secrets.
 
+        ⚠️ IMPORTANT: For large repos/filesystems, use output_file parameter to avoid token limits.
+
         Args:
             target: Git repository URL or filesystem path to scan
             scan_type: Type of scan (filesystem, git, github, gitlab, s3, docker, etc.)
             json_output: Return results in JSON format (boolean)
             only_verified: Only show verified secrets that were validated (boolean)
+            output_file: Path to save results (e.g., "F:/scan-results/trufflehog.json")
+                        RECOMMENDED for large scans to avoid token limits
             additional_args: Additional TruffleHog arguments
 
         Returns:
-            Discovered secrets with details about location and verification status
+            Discovered secrets with details about location and verification status.
+            If output_file specified, returns summary only.
+
+        Example:
+            trufflehog_scan(
+                target="/f/work/MyProject",
+                scan_type="filesystem",
+                output_file="F:/scan-results/trufflehog.json"
+            )
         """
         data = {
             "target": target,
             "scan_type": scan_type,
             "json_output": json_output,
             "only_verified": only_verified,
+            "output_file": output_file,
             "additional_args": additional_args
         }
         return sast_client.safe_post("api/secrets/trufflehog", data)

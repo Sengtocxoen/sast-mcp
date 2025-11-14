@@ -374,6 +374,7 @@ def semgrep():
     - lang: Language filter (python, javascript, go, java, etc.)
     - severity: Filter by severity (ERROR, WARNING, INFO)
     - output_format: json, sarif, text, gitlab-sast
+    - output_file: Path to save scan results (RECOMMENDED to avoid token limits)
     - additional_args: Additional Semgrep arguments
     """
     try:
@@ -383,10 +384,16 @@ def semgrep():
         lang = params.get("lang", "")
         severity = params.get("severity", "")
         output_format = params.get("output_format", "json")
+        output_file = params.get("output_file", "")
         additional_args = params.get("additional_args", "")
 
         # Resolve Windows path to Linux mount path
         resolved_target = resolve_windows_path(target)
+
+        # Resolve output file path if provided
+        resolved_output_file = ""
+        if output_file:
+            resolved_output_file = resolve_windows_path(output_file)
 
         command = f"semgrep --config={config}"
 
@@ -397,6 +404,10 @@ def semgrep():
             command += f" --severity={severity}"
 
         command += f" --{output_format}"
+
+        # Add output file if specified
+        if resolved_output_file:
+            command += f" --output {resolved_output_file}"
 
         if additional_args:
             command += f" {additional_args}"
@@ -409,12 +420,45 @@ def semgrep():
         result["original_path"] = target
         result["resolved_path"] = resolved_target
 
-        # Try to parse JSON output
-        if output_format == "json" and result["stdout"]:
+        # If output_file was used, return summary instead of full output
+        if resolved_output_file and os.path.exists(resolved_output_file):
+            file_size = os.path.getsize(resolved_output_file)
+            result["output_file"] = {
+                "linux_path": resolved_output_file,
+                "windows_path": output_file,
+                "size_bytes": file_size,
+                "exists": True
+            }
+
+            # Try to parse for summary stats
             try:
-                result["parsed_output"] = json.loads(result["stdout"])
+                with open(resolved_output_file, 'r') as f:
+                    parsed = json.loads(f.read())
+                    if "results" in parsed:
+                        result["summary"] = {
+                            "total_findings": len(parsed["results"]),
+                            "output_saved": True
+                        }
+                        # Count by severity if available
+                        severity_counts = {}
+                        for finding in parsed.get("results", []):
+                            sev = finding.get("extra", {}).get("severity", "UNKNOWN")
+                            severity_counts[sev] = severity_counts.get(sev, 0) + 1
+                        if severity_counts:
+                            result["summary"]["by_severity"] = severity_counts
             except:
-                pass
+                result["summary"] = {"output_saved": True, "file_size": file_size}
+
+            # Clear large stdout to avoid token limits
+            result["stdout"] = f"Results saved to {resolved_output_file} ({file_size} bytes)"
+            result["parsed_output"] = None
+        else:
+            # Try to parse JSON output
+            if output_format == "json" and result["stdout"]:
+                try:
+                    result["parsed_output"] = json.loads(result["stdout"])
+                except:
+                    pass
 
         return jsonify(result)
     except Exception as e:
@@ -539,6 +583,7 @@ def bandit():
     - severity_level: Report only issues of a given severity (low, medium, high)
     - confidence_level: Report only issues of given confidence (low, medium, high)
     - format: Output format (json, csv, txt, html, xml)
+    - output_file: Path to save scan results (RECOMMENDED to avoid token limits)
     - additional_args: Additional Bandit arguments
     """
     try:
@@ -547,12 +592,22 @@ def bandit():
         severity_level = params.get("severity_level", "")
         confidence_level = params.get("confidence_level", "")
         output_format = params.get("format", "json")
+        output_file = params.get("output_file", "")
         additional_args = params.get("additional_args", "")
 
         # Resolve Windows path to Linux mount path
         resolved_target = resolve_windows_path(target)
 
+        # Resolve output file path if provided
+        resolved_output_file = ""
+        if output_file:
+            resolved_output_file = resolve_windows_path(output_file)
+
         command = f"bandit -r {resolved_target} -f {output_format}"
+
+        # Add output file if specified
+        if resolved_output_file:
+            command += f" -o {resolved_output_file}"
 
         if severity_level:
             command += f" -ll -l {severity_level.upper()}"
@@ -569,11 +624,44 @@ def bandit():
         result["original_path"] = target
         result["resolved_path"] = resolved_target
 
-        if output_format == "json" and result["stdout"]:
+        # If output_file was used, return summary instead of full output
+        if resolved_output_file and os.path.exists(resolved_output_file):
+            file_size = os.path.getsize(resolved_output_file)
+            result["output_file"] = {
+                "linux_path": resolved_output_file,
+                "windows_path": output_file,
+                "size_bytes": file_size,
+                "exists": True
+            }
+
+            # Try to parse for summary stats
             try:
-                result["parsed_output"] = json.loads(result["stdout"])
+                with open(resolved_output_file, 'r') as f:
+                    parsed = json.loads(f.read())
+                    if "results" in parsed:
+                        result["summary"] = {
+                            "total_issues": len(parsed["results"]),
+                            "output_saved": True
+                        }
+                        # Count by severity
+                        severity_counts = {}
+                        for issue in parsed.get("results", []):
+                            sev = issue.get("issue_severity", "UNKNOWN")
+                            severity_counts[sev] = severity_counts.get(sev, 0) + 1
+                        if severity_counts:
+                            result["summary"]["by_severity"] = severity_counts
             except:
-                pass
+                result["summary"] = {"output_saved": True, "file_size": file_size}
+
+            # Clear large stdout to avoid token limits
+            result["stdout"] = f"Results saved to {resolved_output_file} ({file_size} bytes)"
+            result["parsed_output"] = None
+        else:
+            if output_format == "json" and result["stdout"]:
+                try:
+                    result["parsed_output"] = json.loads(result["stdout"])
+                except:
+                    pass
 
         return jsonify(result)
     except Exception as e:
@@ -765,6 +853,7 @@ def trufflehog():
     - scan_type: Type of scan (git, filesystem, github, gitlab, s3, etc.)
     - json_output: Return JSON format (boolean)
     - only_verified: Only show verified secrets (boolean)
+    - output_file: Path to save scan results (RECOMMENDED to avoid token limits)
     - additional_args: Additional TruffleHog arguments
     """
     try:
@@ -773,10 +862,16 @@ def trufflehog():
         scan_type = params.get("scan_type", "filesystem")
         json_output = params.get("json_output", True)
         only_verified = params.get("only_verified", False)
+        output_file = params.get("output_file", "")
         additional_args = params.get("additional_args", "")
 
         # Resolve Windows path to Linux mount path
         resolved_target = resolve_windows_path(target)
+
+        # Resolve output file path if provided
+        resolved_output_file = ""
+        if output_file:
+            resolved_output_file = resolve_windows_path(output_file)
 
         command = f"trufflehog {scan_type} {resolved_target}"
 
@@ -789,22 +884,58 @@ def trufflehog():
         if additional_args:
             command += f" {additional_args}"
 
+        # Redirect output to file if specified
+        if resolved_output_file:
+            command += f" > {resolved_output_file}"
+
         result = execute_command(command, timeout=TRUFFLEHOG_TIMEOUT)
 
         # Add path resolution info to result
         result["original_path"] = target
         result["resolved_path"] = resolved_target
 
-        # Parse JSON lines output
-        if json_output and result["stdout"]:
+        # If output_file was used, return summary instead of full output
+        if resolved_output_file and os.path.exists(resolved_output_file):
+            file_size = os.path.getsize(resolved_output_file)
+            result["output_file"] = {
+                "linux_path": resolved_output_file,
+                "windows_path": output_file,
+                "size_bytes": file_size,
+                "exists": True
+            }
+
+            # Try to count secrets
             try:
-                secrets = []
-                for line in result["stdout"].strip().split('\n'):
-                    if line.strip():
-                        secrets.append(json.loads(line))
-                result["parsed_secrets"] = secrets
+                with open(resolved_output_file, 'r') as f:
+                    secrets = []
+                    for line in f:
+                        if line.strip():
+                            secrets.append(json.loads(line))
+                    result["summary"] = {
+                        "total_secrets": len(secrets),
+                        "output_saved": True
+                    }
+                    # Count verified vs unverified
+                    verified_count = sum(1 for s in secrets if s.get("verified", False))
+                    result["summary"]["verified_secrets"] = verified_count
+                    result["summary"]["unverified_secrets"] = len(secrets) - verified_count
             except:
-                pass
+                result["summary"] = {"output_saved": True, "file_size": file_size}
+
+            # Clear large stdout to avoid token limits
+            result["stdout"] = f"Results saved to {resolved_output_file} ({file_size} bytes)"
+            result["parsed_secrets"] = None
+        else:
+            # Parse JSON lines output
+            if json_output and result["stdout"]:
+                try:
+                    secrets = []
+                    for line in result["stdout"].strip().split('\n'):
+                        if line.strip():
+                            secrets.append(json.loads(line))
+                    result["parsed_secrets"] = secrets
+                except:
+                    pass
 
         return jsonify(result)
     except Exception as e:
