@@ -1,0 +1,124 @@
+{
+  "project": "/f/work/Resola/Deca/deca-tables-api",
+  "output_directory": "F:/work/Resola/Security-Reports/Deca/deca-tables-api",
+  "generated_at": "2025-11-14T03:25:53.913868",
+  "scans": {
+    "semgrep": {
+      "tool": "semgrep_scan",
+      "params": {
+        "target": "/f/work/Resola/Deca/deca-tables-api",
+        "config": "auto",
+        "output_format": "json",
+        "output_file": "F:/work/Resola/Security-Reports/Deca/deca-tables-api/semgrep-results.json"
+      },
+      "description": "Multi-language SAST scanning"
+    },
+    "trufflehog": {
+      "tool": "trufflehog_scan",
+      "params": {
+        "target_path": "/f/work/Resola/Deca/deca-tables-api",
+        "scan_type": "filesystem",
+        "output_file": "F:/work/Resola/Security-Reports/Deca/deca-tables-api/trufflehog-results.json"
+      },
+      "description": "Secret detection in code and git history"
+    },
+    "gitleaks": {
+      "tool": "gitleaks_scan",
+      "params": {
+        "target_path": "/f/work/Resola/Deca/deca-tables-api",
+        "scan_type": "detect",
+        "output_file": "F:/work/Resola/Security-Reports/Deca/deca-tables-api/gitleaks-results.json"
+      },
+      "description": "Git-focused secret scanning"
+    },
+    "bandit": {
+      "tool": "bandit_scan",
+      "params": {
+        "target_path": "/f/work/Resola/Deca/deca-tables-api",
+        "severity": "medium",
+        "output_file": "F:/work/Resola/Security-Reports/Deca/deca-tables-api/bandit-results.json"
+      },
+      "description": "Python security analysis"
+    },
+    "eslint": {
+      "tool": "eslint_scan",
+      "params": {
+        "target_path": "/f/work/Resola/Deca/deca-tables-api",
+        "output_format": "json",
+        "output_file": "F:/work/Resola/Security-Reports/Deca/deca-tables-api/eslint-results.json"
+      },
+      "description": "JavaScript/TypeScript security"
+    },
+    "npm_audit": {
+      "tool": "npm_audit",
+      "params": {
+        "project_path": "/f/work/Resola/Deca/deca-tables-api",
+        "audit_level": "moderate",
+        "output_file": "F:/work/Resola/Security-Reports/Deca/deca-tables-api/npm-audit-results.json"
+      },
+      "description": "Node.js dependency vulnerabilities"
+    },
+    "safety": {
+      "tool": "safety_check",
+      "params": {
+        "requirements_file": "/f/work/Resola/Deca/deca-tables-api/requirements.txt",
+        "output_file": "F:/work/Resola/Security-Reports/Deca/deca-tables-api/safety-results.json"
+      },
+      "description": "Python dependency vulnerabilities"
+    },
+    "trivy": {
+      "tool": "trivy_scan",
+      "params": {
+        "target_path": "/f/work/Resola/Deca/deca-tables-api",
+        "scan_type": "fs",
+        "severity": "CRITICAL,HIGH,MEDIUM",
+        "output_file": "F:/work/Resola/Security-Reports/Deca/deca-tables-api/trivy-results.json"
+      },
+      "description": "Container and filesystem security"
+    },
+    "bearer": {
+      "tool": "bearer_scan",
+      "params": {
+        "target_path": "/f/work/Resola/Deca/deca-tables-api",
+        "scanner_type": "sast",
+        "output_file": "F:/work/Resola/Security-Reports/Deca/deca-tables-api/bearer-results.json"
+      },
+      "description": "Data security and privacy scanning"
+    },
+    "graudit": {
+      "tool": "graudit_scan",
+      "params": {
+        "target_path": "/f/work/Resola/Deca/deca-tables-api",
+        "database": "all",
+        "output_file": "F:/work/Resola/Security-Reports/Deca/deca-tables-api/graudit-results.txt"
+      },
+      "description": "Source code auditing"
+    },
+    "checkov": {
+      "tool": "checkov_scan",
+      "params": {
+        "target_path": "/f/work/Resola/Deca/deca-tables-api",
+        "framework": "all",
+        "output_format": "json",
+        "output_file": "F:/work/Resola/Security-Reports/Deca/deca-tables-api/checkov-results.json"
+      },
+      "description": "Infrastructure as Code security"
+    },
+    "nikto": {
+      "tool": "nikto_scan",
+      "params": {
+        "target": "localhost:3000",
+        "port": "3000",
+        "output_format": "json",
+        "output_file": "F:/work/Resola/Security-Reports/Deca/deca-tables-api/nikto-results.json"
+      },
+      "description": "Web server vulnerability scanning"
+    }
+  },
+  "usage": {
+    "description": "This manifest shows all available security scans",
+    "how_to_use": "Call each MCP tool with the specified parameters",
+    "important": "Always include output_file parameter to avoid token limits",
+    "note": "Scans can be run in parallel or sequentially as needed"
+  }
+}
