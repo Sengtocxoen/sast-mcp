@@ -177,6 +177,7 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
         lang: str = "",
         severity: str = "",
         output_format: str = "json",
+        output_file: str = "",
         additional_args: str = ""
     ) -> Dict[str, Any]:
         """
@@ -197,10 +198,14 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             lang: Filter by language (python, javascript, typescript, go, java, ruby, php, etc.)
             severity: Filter by severity level (ERROR, WARNING, INFO)
             output_format: Output format (json, sarif, text, gitlab-sast)
+            output_file: Path to save scan results (Windows format: F:/path/to/file.json).
+                        If provided, full results are saved to file and only summary is returned
+                        to avoid token limits.
             additional_args: Additional Semgrep command-line arguments
 
         Returns:
-            Scan results with identified security issues and code quality problems
+            Scan results with identified security issues and code quality problems.
+            If output_file is provided, returns summary with file location instead of full results.
         """
         data = {
             "target": target,
@@ -208,6 +213,7 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             "lang": lang,
             "severity": severity,
             "output_format": output_format,
+            "output_file": output_file,
             "additional_args": additional_args
         }
         return sast_client.safe_post("api/sast/semgrep", data)

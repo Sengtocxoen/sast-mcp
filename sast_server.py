@@ -224,6 +224,77 @@ def verify_mount() -> Dict[str, Any]:
         "issues": issues
     }
 
+
+def save_scan_output_to_file(output_file: str, stdout_data: str, format_type: str = "json") -> Dict[str, Any]:
+    """
+    Save scan output to file and return summary info
+
+    Args:
+        output_file: Windows path where to save the file (e.g., F:/work/results.json)
+        stdout_data: The scan output data to save
+        format_type: Output format (json, text, xml, etc.)
+
+    Returns:
+        Dict with file info and summary stats
+    """
+    try:
+        # Resolve Windows path to Linux mount path
+        resolved_output_path = resolve_windows_path(output_file)
+
+        # Ensure directory exists
+        output_dir = os.path.dirname(resolved_output_path)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+
+        # Write output to file
+        with open(resolved_output_path, 'w', encoding='utf-8') as f:
+            f.write(stdout_data)
+
+        file_size = os.path.getsize(resolved_output_path)
+
+        # Generate summary based on format
+        summary = {"total_lines": len(stdout_data.splitlines())}
+
+        if format_type == "json" and stdout_data:
+            try:
+                parsed = json.loads(stdout_data)
+                if isinstance(parsed, dict):
+                    # Semgrep format
+                    if "results" in parsed:
+                        summary["total_findings"] = len(parsed["results"])
+                        # Count by severity
+                        severity_counts = {}
+                        for result in parsed["results"]:
+                            sev = result.get("extra", {}).get("severity", "UNKNOWN")
+                            severity_counts[sev] = severity_counts.get(sev, 0) + 1
+                        summary["by_severity"] = severity_counts
+                    if "errors" in parsed:
+                        summary["total_errors"] = len(parsed["errors"])
+                    # npm audit format
+                    if "vulnerabilities" in parsed:
+                        summary["vulnerabilities"] = parsed["vulnerabilities"]
+            except json.JSONDecodeError:
+                logger.warning("Could not parse JSON output for summary")
+
+        logger.info(f"✓ Scan output saved to {resolved_output_path} ({file_size} bytes)")
+
+        return {
+            "file_saved": True,
+            "linux_path": resolved_output_path,
+            "windows_path": output_file,
+            "file_size_bytes": file_size,
+            "summary": summary
+        }
+
+    except Exception as e:
+        logger.error(f"Error saving output to file: {str(e)}")
+        logger.error(traceback.format_exc())
+        return {
+            "file_saved": False,
+            "error": str(e)
+        }
+
+
 class CommandExecutor:
     """
     Enhanced command executor with proper timeout and output handling.
@@ -374,6 +445,7 @@ def semgrep():
     - lang: Language filter (python, javascript, go, java, etc.)
     - severity: Filter by severity (ERROR, WARNING, INFO)
     - output_format: json, sarif, text, gitlab-sast
+    - output_file: Path to save results (Windows format: F:/path/file.json)
     - additional_args: Additional Semgrep arguments
     """
     try:
@@ -383,6 +455,7 @@ def semgrep():
         lang = params.get("lang", "")
         severity = params.get("severity", "")
         output_format = params.get("output_format", "json")
+        output_file = params.get("output_file", "")
         additional_args = params.get("additional_args", "")
 
         # Resolve Windows path to Linux mount path
@@ -415,6 +488,19 @@ def semgrep():
                 result["parsed_output"] = json.loads(result["stdout"])
             except:
                 pass
+
+        # Handle output_file if provided
+        if output_file and result.get("stdout"):
+            file_info = save_scan_output_to_file(output_file, result["stdout"], output_format)
+            result["output_file_info"] = file_info
+
+            # If file saved successfully, truncate stdout to save tokens
+            if file_info.get("file_saved"):
+                result["stdout_truncated"] = True
+                result["stdout"] = f"[Output saved to {file_info['windows_path']}]\n\nSummary: {json.dumps(file_info['summary'], indent=2)}"
+                # Remove parsed_output to save more tokens
+                if "parsed_output" in result:
+                    del result["parsed_output"]
 
         return jsonify(result)
     except Exception as e:
