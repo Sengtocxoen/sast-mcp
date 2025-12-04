@@ -14,10 +14,12 @@ This project provides a bridge between Claude Code and industry-standard securit
   - Dependencies: Safety, npm audit, OWASP Dependency-Check, Snyk
   - IaC: Checkov, tfsec, Trivy
   - Kali Tools: Nikto, Nmap, SQLMap, WPScan, DIRB, Lynis, ClamAV
+- **Background Processing**: All scans run asynchronously in the background with job management
+- **Automatic File Output**: Results automatically saved to files with configurable output directory
+- **Job Management API**: Track scan status, retrieve results, cancel jobs, and list all scans
 - **MCP Protocol**: Seamless integration with Claude Code AI
 - **Remote Execution**: Run security tools on a dedicated security VM (Kali Linux) while working on Windows
 - **Path Resolution**: Automatic Windows ↔ Linux path mapping for cross-platform operation
-- **File Output Support**: All tools support saving results to files for further analysis
 - **Flexible Architecture**: Choose between full-featured or lightweight server
 - **Comprehensive Coverage**: Code analysis, secret scanning, dependency checking, IaC security, web security, network scanning, malware detection
 
@@ -552,6 +554,150 @@ POST /api/container/trivy
 ```http
 POST /api/command
 ```
+
+### Background Job Management
+```http
+GET  /api/jobs                  # List all jobs
+GET  /api/jobs/{job_id}         # Get job status
+GET  /api/jobs/{job_id}/result  # Get job result
+POST /api/jobs/{job_id}/cancel  # Cancel a job
+POST /api/jobs/cleanup           # Cleanup old jobs
+```
+
+## Background Processing
+
+All security scans now run in the background by default, allowing you to:
+- Start multiple scans concurrently
+- Continue working while scans execute
+- Retrieve results when convenient
+- Track scan progress and status
+
+### How It Works
+
+1. **Submit a Scan**: When you request a scan (e.g., Semgrep), the server immediately returns a job ID
+2. **Background Execution**: The scan runs in the background (up to 10 concurrent jobs by default)
+3. **Automatic File Storage**: Results are automatically saved to `/var/sast-mcp/scan-results/` (or your configured directory)
+4. **Retrieve Results**: Use the job ID to check status and retrieve results
+
+### Example Workflow
+
+**1. Start a Semgrep scan:**
+```bash
+curl -X POST http://localhost:6000/api/sast/semgrep \
+  -H "Content-Type: application/json" \
+  -d '{
+    "target": "/path/to/code",
+    "config": "auto",
+    "output_format": "json"
+  }'
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Scan job submitted successfully",
+  "job_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "job_status": "pending",
+  "output_file": "/var/sast-mcp/scan-results/semgrep_20250104_143022_a1b2c3d4.json",
+  "check_status_url": "/api/jobs/a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "get_result_url": "/api/jobs/a1b2c3d4-e5f6-7890-abcd-ef1234567890/result"
+}
+```
+
+**2. Check scan status:**
+```bash
+curl http://localhost:6000/api/jobs/a1b2c3d4-e5f6-7890-abcd-ef1234567890
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "job": {
+    "job_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "tool_name": "semgrep",
+    "status": "running",
+    "created_at": "2025-01-04T14:30:22",
+    "started_at": "2025-01-04T14:30:23",
+    "output_file": "/var/sast-mcp/scan-results/semgrep_20250104_143022_a1b2c3d4.json",
+    "progress": 0,
+    "duration_seconds": 45.2
+  }
+}
+```
+
+**3. Get results when complete:**
+```bash
+curl http://localhost:6000/api/jobs/a1b2c3d4-e5f6-7890-abcd-ef1234567890/result
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "status": "completed",
+  "job": {
+    "job_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "status": "completed",
+    "duration_seconds": 127.5
+  },
+  "result": {
+    "job_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "tool_name": "semgrep",
+    "started_at": "2025-01-04T14:30:23",
+    "completed_at": "2025-01-04T14:32:30",
+    "scan_result": {
+      "stdout": "...",
+      "summary": {
+        "total_findings": 15,
+        "total_errors": 0
+      }
+    }
+  }
+}
+```
+
+### Configuration
+
+Configure background processing in your `.env` file:
+
+```bash
+# Default directory for scan results
+DEFAULT_OUTPUT_DIR=/var/sast-mcp/scan-results
+
+# Maximum concurrent scan jobs
+MAX_WORKERS=10
+
+# Keep job metadata for 72 hours (3 days)
+JOB_RETENTION_HOURS=72
+```
+
+### Custom Output Locations
+
+You can specify a custom output file for any scan:
+
+```json
+{
+  "target": "/path/to/code",
+  "output_file": "F:/my-scans/custom-name.json"
+}
+```
+
+If not specified, files are automatically named: `{tool}_{timestamp}_{job_id}.json`
+
+### Synchronous Mode (Legacy)
+
+For backward compatibility, you can run scans synchronously:
+
+```json
+{
+  "target": "/path/to/code",
+  "background": false
+}
+```
+
+This will block until the scan completes (not recommended for long-running scans).
 
 ## Project Structure
 
