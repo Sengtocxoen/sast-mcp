@@ -23,6 +23,9 @@ mcp>=0.9.0
 # Environment Variables (optional, for .env file support)
 python-dotenv>=1.0.0
 
+# TOON Format Converter (for LLM-optimized output)
+python-toon>=0.1.0
+
 # ============================================================================
 # Optional: Python-based SAST Tools
 # ============================================================================
