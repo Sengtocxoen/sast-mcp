@@ -243,6 +243,23 @@ completed_at: 2025-12-04T15:35:00
 scan_result{...}: ...
 
 # AI Payload (Future Analysis)
+# JSON format (jq-compatible) - DEFAULT
+{
+    "format": "json",
+    "data": {
+        "job_id": "abc-123",
+        "tool_name": "semgrep",
+        "scan_result": {...}
+    },
+    "metadata": {...},
+    "ai_ready": true,
+    "instructions": {
+        "task": "analyze_security_findings",
+        "output_format": "structured_summary"
+    }
+}
+
+# TOON format (compact) - Optional
 {
     "format": "toon",
     "data": "<toon_string>",
@@ -349,6 +366,38 @@ analysis = analyze_scan_with_ai(
     custom_prompt="Focus on SQL injection and XSS vulnerabilities"
 )
 ```
+
+### Using jq with AI Payload
+
+The AI payload is now saved in **JSON format by default** (not TOON), making it fully compatible with `jq` and other JSON processing tools:
+
+```bash
+# Extract scan metadata
+jq '.metadata' scan_result.ai-payload.json
+
+# Get job ID
+jq -r '.data.job_id' scan_result.ai-payload.json
+
+# Get tool name
+jq -r '.data.tool_name' scan_result.ai-payload.json
+
+# Extract all findings (for Semgrep)
+jq '.data.scan_result.parsed_output.results[]' scan_result.ai-payload.json
+
+# Count high-severity findings
+jq '[.data.scan_result.parsed_output.results[] | select(.extra.severity == "HIGH")] | length' scan_result.ai-payload.json
+
+# Extract specific fields
+jq '.data.scan_result.parsed_output.results[] | {path: .path, check_id: .check_id, severity: .extra.severity}' scan_result.ai-payload.json
+
+# Pretty print the entire scan result
+jq '.data' scan_result.ai-payload.json
+
+# Combine with other tools
+jq -r '.data.scan_result.parsed_output.results[] | "\(.path):\(.start.line) - \(.extra.message)"' scan_result.ai-payload.json
+```
+
+**Note**: The `.toon` file still contains the compact TOON format for reference, while the `.ai-payload.json` file contains structured JSON data that works seamlessly with `jq`, Python scripts, and other JSON processing tools.
 
 ## Benefits
 
