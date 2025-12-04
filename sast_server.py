@@ -76,6 +76,23 @@ from enum import Enum
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+# Import TOON converter utilities
+from toon_converter import (
+    convert_scan_result_to_toon,
+    is_toon_available,
+    calculate_token_savings,
+    prepare_toon_for_ai_analysis
+)
+
+# Import AI analysis utilities
+from ai_analysis import (
+    analyze_scan_with_ai,
+    is_ai_configured,
+    summarize_findings,
+    prioritize_findings,
+    generate_remediation_guidance
+)
+
 # ============================================================================
 # ENVIRONMENT & CONFIGURATION
 # ============================================================================
@@ -267,7 +284,7 @@ class JobManager:
             logger.error(traceback.format_exc())
 
     def _save_job_result(self, job: Job, result: Dict[str, Any]):
-        """Save job result to output file"""
+        """Save job result to output file (JSON and TOON formats)"""
         try:
             # Resolve Windows path if needed
             resolved_output_file = resolve_windows_path(job.output_file) if job.output_file.startswith('F:') else job.output_file
@@ -285,12 +302,63 @@ class JobManager:
                 "scan_result": result
             }
 
-            # Write to file
+            # Write JSON to file
             with open(resolved_output_file, 'w', encoding='utf-8') as f:
                 json.dump(full_result, f, indent=2, ensure_ascii=False)
 
             file_size = os.path.getsize(resolved_output_file)
             logger.info(f"Saved job {job.job_id} result to {resolved_output_file} ({file_size} bytes)")
+
+            # Convert to TOON format and save to temp file
+            if is_toon_available():
+                try:
+                    logger.info(f"Converting scan result to TOON format for job {job.job_id}")
+                    toon_output = convert_scan_result_to_toon(full_result)
+
+                    if toon_output:
+                        # Create TOON output file path (same name but with .toon extension)
+                        toon_file_path = resolved_output_file.rsplit('.', 1)[0] + '.toon'
+
+                        # Save TOON format
+                        with open(toon_file_path, 'w', encoding='utf-8') as f:
+                            f.write(toon_output)
+
+                        toon_file_size = os.path.getsize(toon_file_path)
+                        logger.info(f"Saved TOON format to {toon_file_path} ({toon_file_size} bytes)")
+
+                        # Calculate token savings
+                        savings = calculate_token_savings(full_result, toon_output)
+                        logger.info(f"Token savings: {savings['savings_percent']}% "
+                                  f"({savings['savings_tokens_estimate']} tokens)")
+
+                        # Prepare for AI analysis (future feature)
+                        ai_payload = prepare_toon_for_ai_analysis(
+                            toon_data=toon_output,
+                            scan_metadata={
+                                "job_id": job.job_id,
+                                "tool_name": job.tool_name,
+                                "scan_date": datetime.now().isoformat(),
+                                "target": job.params.get("target", "unknown")
+                            }
+                        )
+
+                        # Save AI-ready payload for future processing
+                        ai_payload_path = resolved_output_file.rsplit('.', 1)[0] + '.ai-payload.json'
+                        with open(ai_payload_path, 'w', encoding='utf-8') as f:
+                            json.dump(ai_payload, f, indent=2, ensure_ascii=False)
+
+                        logger.info(f"Saved AI-ready payload to {ai_payload_path}")
+                        logger.info("AI payload ready for future LLM analysis (API key integration pending)")
+
+                    else:
+                        logger.warning("TOON conversion returned None, skipping TOON output")
+
+                except Exception as e:
+                    logger.error(f"Error during TOON conversion: {str(e)}")
+                    logger.error(traceback.format_exc())
+                    # Don't raise - TOON conversion failure shouldn't fail the job
+            else:
+                logger.info("TOON converter not available, skipping TOON format generation")
 
         except Exception as e:
             logger.error(f"Error saving job result: {str(e)}")
@@ -2275,6 +2343,143 @@ def cleanup_jobs():
         })
     except Exception as e:
         logger.error(f"Error cleaning up jobs: {str(e)}")
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+
+# ============================================================================
+# AI ANALYSIS ENDPOINTS (Future Feature)
+# ============================================================================
+
+@app.route("/api/analysis/ai-summary", methods=["POST"])
+def ai_summary():
+    """
+    Generate AI-powered summary of scan results (Future Feature)
+
+    Parameters:
+    - job_id: Job ID to analyze
+    - analysis_type: Type of analysis (full, quick, prioritization)
+    - custom_prompt: Optional custom analysis prompt
+    - include: List of sections to include (summary, remediation, priorities)
+    """
+    try:
+        params = request.json
+        job_id = params.get("job_id", "")
+        analysis_type = params.get("analysis_type", "full")
+        custom_prompt = params.get("custom_prompt", None)
+        include_sections = params.get("include", ["summary", "remediation", "priorities"])
+
+        if not job_id:
+            return jsonify({"error": "job_id parameter is required"}), 400
+
+        # Get job
+        job = job_manager.get_job(job_id)
+        if not job:
+            return jsonify({"error": "Job not found"}), 404
+
+        if job.status != JobStatus.COMPLETED:
+            return jsonify({
+                "error": "Job not completed",
+                "status": job.status.value
+            }), 400
+
+        # Load AI payload
+        try:
+            resolved_output_file = resolve_windows_path(job.output_file) if job.output_file.startswith('F:') else job.output_file
+            ai_payload_path = resolved_output_file.rsplit('.', 1)[0] + '.ai-payload.json'
+
+            with open(ai_payload_path, 'r', encoding='utf-8') as f:
+                ai_payload = json.load(f)
+
+            # Perform AI analysis (currently returns stub)
+            analysis_result = analyze_scan_with_ai(ai_payload, custom_prompt=custom_prompt)
+
+            return jsonify({
+                "success": True,
+                "job_id": job_id,
+                "analysis_type": analysis_type,
+                "analysis": analysis_result,
+                "ai_configured": is_ai_configured()
+            })
+
+        except FileNotFoundError:
+            return jsonify({
+                "error": "AI payload file not found. Ensure TOON converter is installed and job completed successfully."
+            }), 404
+
+    except Exception as e:
+        logger.error(f"Error in AI summary endpoint: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+
+@app.route("/api/analysis/summarize", methods=["POST"])
+def summarize():
+    """
+    Generate basic statistical summary of scan results (no AI required)
+
+    Parameters:
+    - job_id: Job ID to summarize
+    """
+    try:
+        params = request.json
+        job_id = params.get("job_id", "")
+
+        if not job_id:
+            return jsonify({"error": "job_id parameter is required"}), 400
+
+        # Get job
+        job = job_manager.get_job(job_id)
+        if not job:
+            return jsonify({"error": "Job not found"}), 404
+
+        if job.status != JobStatus.COMPLETED:
+            return jsonify({
+                "error": "Job not completed",
+                "status": job.status.value
+            }), 400
+
+        # Load scan results
+        try:
+            resolved_output_file = resolve_windows_path(job.output_file) if job.output_file.startswith('F:') else job.output_file
+
+            with open(resolved_output_file, 'r', encoding='utf-8') as f:
+                scan_results = json.load(f)
+
+            # Generate summary
+            summary = summarize_findings(scan_results)
+
+            return jsonify({
+                "success": True,
+                "job_id": job_id,
+                "summary": summary
+            })
+
+        except FileNotFoundError:
+            return jsonify({"error": "Result file not found"}), 404
+
+    except Exception as e:
+        logger.error(f"Error in summarize endpoint: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+
+@app.route("/api/analysis/toon-status", methods=["GET"])
+def toon_status():
+    """Check TOON converter and AI analysis status"""
+    try:
+        return jsonify({
+            "toon_available": is_toon_available(),
+            "ai_configured": is_ai_configured(),
+            "features": {
+                "toon_conversion": is_toon_available(),
+                "ai_analysis": is_ai_configured(),
+                "statistical_summary": True
+            },
+            "message": "TOON conversion is " + ("enabled" if is_toon_available() else "disabled") +
+                      ", AI analysis is " + ("configured" if is_ai_configured() else "not configured")
+        })
+    except Exception as e:
+        logger.error(f"Error in toon-status endpoint: {str(e)}")
         return jsonify({"error": f"Server error: {str(e)}"}), 500
 
 

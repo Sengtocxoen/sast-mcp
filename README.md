@@ -14,9 +14,15 @@ This project provides a bridge between Claude Code and industry-standard securit
   - Dependencies: Safety, npm audit, OWASP Dependency-Check, Snyk
   - IaC: Checkov, tfsec, Trivy
   - Kali Tools: Nikto, Nmap, SQLMap, WPScan, DIRB, Lynis, ClamAV
+- **TOON Format Integration** 🎒: Automatic conversion to Token-Oriented Object Notation for LLM-optimized analysis
+  - **30-60% token reduction** compared to JSON
+  - Automatic TOON format output for all scans
+  - AI-ready payloads for future LLM analysis
+  - Significant cost savings on AI API usage
 - **Background Processing**: All scans run asynchronously in the background with job management
-- **Automatic File Output**: Results automatically saved to files with configurable output directory
+- **Automatic File Output**: Results automatically saved to files with configurable output directory (JSON + TOON + AI payload)
 - **Job Management API**: Track scan status, retrieve results, cancel jobs, and list all scans
+- **AI Analysis Ready**: Prepared for future AI-powered scan summarization and decision support
 - **MCP Protocol**: Seamless integration with Claude Code AI
 - **Remote Execution**: Run security tools on a dedicated security VM (Kali Linux) while working on Windows
 - **Path Resolution**: Automatic Windows ↔ Linux path mapping for cross-platform operation
@@ -706,21 +712,26 @@ MCP-SAST-Server/
 ├── sast_server.py              # Full-featured SAST server (recommended)
 ├── simple_sast_server.py       # Lightweight alternative (minimal dependencies)
 ├── sast_mcp_client.py          # MCP client for Claude Code integration
+├── toon_converter.py           # TOON format converter for LLM optimization
+├── ai_analysis.py              # AI analysis utilities (future feature)
 ├── requirements.txt            # Python dependencies
 ├── .env.example                # Server configuration template
 ├── config.example.json         # Claude Code configuration examples
 ├── .gitignore                  # Git ignore rules
 ├── LICENSE                     # MIT License
 ├── CONTRIBUTING.md             # Contribution guidelines
+├── TOON_CONVERTER.md           # TOON format integration documentation
 └── README.md                   # This file (main documentation)
 ```
 
 ### File Descriptions
 
 **Core Files:**
-- `sast_server.py` - Main SAST server with .env support and path resolution
+- `sast_server.py` - Main SAST server with .env support, path resolution, and TOON conversion
 - `sast_mcp_client.py` - MCP client that connects Claude Code to the server
 - `simple_sast_server.py` - Alternative server with no external dependencies
+- `toon_converter.py` - TOON format converter for 30-60% token reduction
+- `ai_analysis.py` - AI-powered analysis utilities (stub for future implementation)
 
 **Configuration:**
 - `.env.example` - Environment variables template for server configuration
@@ -728,8 +739,27 @@ MCP-SAST-Server/
 
 **Documentation:**
 - `README.md` - Complete project documentation (you're reading it!)
+- `TOON_CONVERTER.md` - **TOON format integration guide** (see for AI analysis features)
 - `CONTRIBUTING.md` - Guidelines for contributing to the project
 - `LICENSE` - MIT License terms
+
+### TOON Format & AI Analysis
+
+The server now includes **automatic TOON format conversion** for all scan results. TOON (Token-Oriented Object Notation) reduces token usage by 30-60% compared to JSON, enabling more efficient LLM-powered analysis.
+
+**Features:**
+- ✅ Automatic conversion to TOON format for all scans
+- ✅ AI-ready payloads generated for future analysis
+- ✅ Token savings statistics and logging
+- 🚧 AI-powered summarization (coming soon)
+- 🚧 Intelligent finding prioritization (coming soon)
+- 🚧 Automated remediation guidance (coming soon)
+
+**Learn More:** See [TOON_CONVERTER.md](TOON_CONVERTER.md) for complete documentation on:
+- TOON format integration
+- Token savings analysis
+- AI analysis configuration (future)
+- Usage examples and API endpoints
 
 ## Troubleshooting
 
