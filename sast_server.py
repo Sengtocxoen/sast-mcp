@@ -65,11 +65,16 @@ import sys
 import traceback
 import threading
 import re
+import uuid
+import time
 from typing import Dict, Any, List, Optional
 from flask import Flask, request, jsonify
 from datetime import datetime
 import tempfile
 import shutil
+from enum import Enum
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 # ============================================================================
 # ENVIRONMENT & CONFIGURATION
@@ -115,8 +120,217 @@ TRUFFLEHOG_TIMEOUT = int(os.environ.get("TRUFFLEHOG_TIMEOUT", 3600))  # 1 hour
 MOUNT_POINT = os.environ.get("MOUNT_POINT", "/mnt/work")  # Linux mount point
 WINDOWS_BASE = os.environ.get("WINDOWS_BASE", "F:/work")  # Windows base path
 
+# Background Job Configuration
+DEFAULT_OUTPUT_DIR = os.environ.get("DEFAULT_OUTPUT_DIR", "/var/sast-mcp/scan-results")
+MAX_WORKERS = int(os.environ.get("MAX_WORKERS", 10))  # Max concurrent scan jobs
+JOB_RETENTION_HOURS = int(os.environ.get("JOB_RETENTION_HOURS", 72))  # Keep job data for 72 hours
+
 # Initialize Flask application
 app = Flask(__name__)
+
+# ============================================================================
+# BACKGROUND JOB MANAGEMENT SYSTEM
+# ============================================================================
+
+class JobStatus(Enum):
+    """Job status enumeration"""
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class Job:
+    """Represents a background scan job"""
+
+    def __init__(self, job_id: str, tool_name: str, params: Dict[str, Any], output_file: str = None):
+        self.job_id = job_id
+        self.tool_name = tool_name
+        self.params = params
+        self.status = JobStatus.PENDING
+        self.created_at = datetime.now()
+        self.started_at = None
+        self.completed_at = None
+        self.output_file = output_file
+        self.result = None
+        self.error = None
+        self.progress = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert job to dictionary for JSON serialization"""
+        return {
+            "job_id": self.job_id,
+            "tool_name": self.tool_name,
+            "params": self.params,
+            "status": self.status.value,
+            "created_at": self.created_at.isoformat(),
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "output_file": self.output_file,
+            "error": self.error,
+            "progress": self.progress,
+            "duration_seconds": self._calculate_duration()
+        }
+
+    def _calculate_duration(self) -> Optional[float]:
+        """Calculate job duration in seconds"""
+        if self.started_at:
+            end_time = self.completed_at if self.completed_at else datetime.now()
+            return (end_time - self.started_at).total_seconds()
+        return None
+
+
+class JobManager:
+    """Manages background scan jobs"""
+
+    def __init__(self, max_workers: int = MAX_WORKERS):
+        self.jobs: Dict[str, Job] = {}
+        self.lock = threading.Lock()
+        self.executor = ThreadPoolExecutor(max_workers=max_workers)
+        logger.info(f"JobManager initialized with {max_workers} workers")
+
+        # Ensure default output directory exists
+        os.makedirs(DEFAULT_OUTPUT_DIR, exist_ok=True)
+
+    def create_job(self, tool_name: str, params: Dict[str, Any], output_file: str = None) -> Job:
+        """Create a new job"""
+        job_id = str(uuid.uuid4())
+
+        # Generate default output file if not provided
+        if not output_file:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"{tool_name}_{timestamp}_{job_id[:8]}.json"
+            output_file = os.path.join(DEFAULT_OUTPUT_DIR, filename)
+
+        job = Job(job_id, tool_name, params, output_file)
+
+        with self.lock:
+            self.jobs[job_id] = job
+
+        logger.info(f"Created job {job_id} for tool {tool_name}")
+        return job
+
+    def get_job(self, job_id: str) -> Optional[Job]:
+        """Get job by ID"""
+        with self.lock:
+            return self.jobs.get(job_id)
+
+    def list_jobs(self, status_filter: Optional[str] = None, limit: int = 100) -> List[Job]:
+        """List all jobs with optional status filter"""
+        with self.lock:
+            jobs = list(self.jobs.values())
+
+        if status_filter:
+            jobs = [j for j in jobs if j.status.value == status_filter]
+
+        # Sort by created_at descending
+        jobs.sort(key=lambda x: x.created_at, reverse=True)
+
+        return jobs[:limit]
+
+    def submit_job(self, job: Job, work_func, *args, **kwargs):
+        """Submit a job for background execution"""
+        job.status = JobStatus.PENDING
+        future = self.executor.submit(self._execute_job, job, work_func, *args, **kwargs)
+        logger.info(f"Submitted job {job.job_id} to executor")
+        return future
+
+    def _execute_job(self, job: Job, work_func, *args, **kwargs):
+        """Execute a job in the background"""
+        try:
+            job.status = JobStatus.RUNNING
+            job.started_at = datetime.now()
+            logger.info(f"Job {job.job_id} started")
+
+            # Execute the work function
+            result = work_func(*args, **kwargs)
+
+            # Save result to file
+            self._save_job_result(job, result)
+
+            job.status = JobStatus.COMPLETED
+            job.completed_at = datetime.now()
+            job.result = {
+                "success": True,
+                "output_file": job.output_file,
+                "summary": result.get("summary", {})
+            }
+
+            logger.info(f"Job {job.job_id} completed successfully")
+
+        except Exception as e:
+            job.status = JobStatus.FAILED
+            job.completed_at = datetime.now()
+            job.error = str(e)
+            logger.error(f"Job {job.job_id} failed: {str(e)}")
+            logger.error(traceback.format_exc())
+
+    def _save_job_result(self, job: Job, result: Dict[str, Any]):
+        """Save job result to output file"""
+        try:
+            # Resolve Windows path if needed
+            resolved_output_file = resolve_windows_path(job.output_file) if job.output_file.startswith('F:') else job.output_file
+
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(resolved_output_file), exist_ok=True)
+
+            # Prepare full result with metadata
+            full_result = {
+                "job_id": job.job_id,
+                "tool_name": job.tool_name,
+                "scan_params": job.params,
+                "started_at": job.started_at.isoformat(),
+                "completed_at": datetime.now().isoformat(),
+                "scan_result": result
+            }
+
+            # Write to file
+            with open(resolved_output_file, 'w', encoding='utf-8') as f:
+                json.dump(full_result, f, indent=2, ensure_ascii=False)
+
+            file_size = os.path.getsize(resolved_output_file)
+            logger.info(f"Saved job {job.job_id} result to {resolved_output_file} ({file_size} bytes)")
+
+        except Exception as e:
+            logger.error(f"Error saving job result: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise
+
+    def cancel_job(self, job_id: str) -> bool:
+        """Cancel a running job"""
+        job = self.get_job(job_id)
+        if not job:
+            return False
+
+        if job.status in [JobStatus.PENDING, JobStatus.RUNNING]:
+            job.status = JobStatus.CANCELLED
+            job.completed_at = datetime.now()
+            logger.info(f"Job {job_id} cancelled")
+            return True
+
+        return False
+
+    def cleanup_old_jobs(self):
+        """Remove jobs older than JOB_RETENTION_HOURS"""
+        with self.lock:
+            current_time = datetime.now()
+            jobs_to_remove = []
+
+            for job_id, job in self.jobs.items():
+                age_hours = (current_time - job.created_at).total_seconds() / 3600
+                if age_hours > JOB_RETENTION_HOURS:
+                    jobs_to_remove.append(job_id)
+
+            for job_id in jobs_to_remove:
+                del self.jobs[job_id]
+                logger.info(f"Cleaned up old job {job_id}")
+
+            return len(jobs_to_remove)
+
+
+# Global job manager instance
+job_manager = JobManager(max_workers=MAX_WORKERS)
 
 # ============================================================================
 # PATH RESOLUTION
@@ -430,9 +644,97 @@ def execute_command(command: str, cwd: Optional[str] = None, timeout: int = COMM
     return executor.execute()
 
 
+def run_scan_in_background(tool_name: str, params: Dict[str, Any], scan_function) -> Dict[str, Any]:
+    """
+    Helper function to run any scan in the background
+
+    Args:
+        tool_name: Name of the tool (e.g., 'semgrep', 'bandit')
+        params: Scan parameters
+        scan_function: Function that performs the actual scan and returns results
+
+    Returns:
+        Response dict with job information
+    """
+    try:
+        # Get output_file from params or use default
+        output_file = params.get("output_file", None)
+
+        # Create job
+        job = job_manager.create_job(tool_name, params, output_file)
+
+        # Submit job for background execution
+        job_manager.submit_job(job, scan_function, params)
+
+        return {
+            "success": True,
+            "message": f"Scan job submitted successfully",
+            "job_id": job.job_id,
+            "job_status": job.status.value,
+            "output_file": job.output_file,
+            "check_status_url": f"/api/jobs/{job.job_id}",
+            "get_result_url": f"/api/jobs/{job.job_id}/result"
+        }
+
+    except Exception as e:
+        logger.error(f"Error submitting background job: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise
+
+
 # ============================================================================
 # SAST TOOL ENDPOINTS
 # ============================================================================
+
+def _semgrep_scan(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Internal function to execute semgrep scan"""
+    target = params.get("target", ".")
+    config = params.get("config", "auto")
+    lang = params.get("lang", "")
+    severity = params.get("severity", "")
+    output_format = params.get("output_format", "json")
+    additional_args = params.get("additional_args", "")
+
+    # Resolve Windows path to Linux mount path
+    resolved_target = resolve_windows_path(target)
+
+    command = f"semgrep --config={config}"
+
+    if lang:
+        command += f" --lang={lang}"
+
+    if severity:
+        command += f" --severity={severity}"
+
+    command += f" --{output_format}"
+
+    if additional_args:
+        command += f" {additional_args}"
+
+    command += f" {resolved_target}"
+
+    result = execute_command(command, timeout=SEMGREP_TIMEOUT)
+
+    # Add path resolution info to result
+    result["original_path"] = target
+    result["resolved_path"] = resolved_target
+
+    # Try to parse JSON output for summary
+    summary = {}
+    if output_format == "json" and result["stdout"]:
+        try:
+            parsed = json.loads(result["stdout"])
+            result["parsed_output"] = parsed
+            if "results" in parsed:
+                summary["total_findings"] = len(parsed["results"])
+            if "errors" in parsed:
+                summary["total_errors"] = len(parsed["errors"])
+        except:
+            pass
+
+    result["summary"] = summary
+    return result
+
 
 @app.route("/api/sast/semgrep", methods=["POST"])
 def semgrep():
@@ -447,62 +749,22 @@ def semgrep():
     - output_format: json, sarif, text, gitlab-sast
     - output_file: Path to save results (Windows format: F:/path/file.json)
     - additional_args: Additional Semgrep arguments
+    - background: Run in background (default: True)
     """
     try:
         params = request.json
-        target = params.get("target", ".")
-        config = params.get("config", "auto")
-        lang = params.get("lang", "")
-        severity = params.get("severity", "")
-        output_format = params.get("output_format", "json")
-        output_file = params.get("output_file", "")
-        additional_args = params.get("additional_args", "")
+        background = params.get("background", True)
 
-        # Resolve Windows path to Linux mount path
-        resolved_target = resolve_windows_path(target)
+        # Run in background by default
+        if background:
+            result = run_scan_in_background("semgrep", params, _semgrep_scan)
+            return jsonify(result)
 
-        command = f"semgrep --config={config}"
+        # Legacy synchronous mode
+        else:
+            result = _semgrep_scan(params)
+            return jsonify(result)
 
-        if lang:
-            command += f" --lang={lang}"
-
-        if severity:
-            command += f" --severity={severity}"
-
-        command += f" --{output_format}"
-
-        if additional_args:
-            command += f" {additional_args}"
-
-        command += f" {resolved_target}"
-
-        result = execute_command(command, timeout=SEMGREP_TIMEOUT)
-
-        # Add path resolution info to result
-        result["original_path"] = target
-        result["resolved_path"] = resolved_target
-
-        # Try to parse JSON output
-        if output_format == "json" and result["stdout"]:
-            try:
-                result["parsed_output"] = json.loads(result["stdout"])
-            except:
-                pass
-
-        # Handle output_file if provided
-        if output_file and result.get("stdout"):
-            file_info = save_scan_output_to_file(output_file, result["stdout"], output_format)
-            result["output_file_info"] = file_info
-
-            # If file saved successfully, truncate stdout to save tokens
-            if file_info.get("file_saved"):
-                result["stdout_truncated"] = True
-                result["stdout"] = f"[Output saved to {file_info['windows_path']}]\n\nSummary: {json.dumps(file_info['summary'], indent=2)}"
-                # Remove parsed_output to save more tokens
-                if "parsed_output" in result:
-                    del result["parsed_output"]
-
-        return jsonify(result)
     except Exception as e:
         logger.error(f"Error in semgrep endpoint: {str(e)}")
         logger.error(traceback.format_exc())
@@ -1872,6 +2134,147 @@ def generic_command():
         return jsonify(result)
     except Exception as e:
         logger.error(f"Error in command endpoint: {str(e)}")
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+
+# ============================================================================
+# BACKGROUND JOB MANAGEMENT ENDPOINTS
+# ============================================================================
+
+@app.route("/api/jobs", methods=["GET"])
+def list_jobs():
+    """List all background jobs with optional filtering"""
+    try:
+        status_filter = request.args.get("status", None)
+        limit = int(request.args.get("limit", 100))
+
+        jobs = job_manager.list_jobs(status_filter=status_filter, limit=limit)
+        jobs_data = [job.to_dict() for job in jobs]
+
+        return jsonify({
+            "success": True,
+            "total": len(jobs_data),
+            "jobs": jobs_data
+        })
+    except Exception as e:
+        logger.error(f"Error listing jobs: {str(e)}")
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+
+@app.route("/api/jobs/<job_id>", methods=["GET"])
+def get_job_status(job_id: str):
+    """Get the status of a specific job"""
+    try:
+        job = job_manager.get_job(job_id)
+
+        if not job:
+            return jsonify({"error": "Job not found"}), 404
+
+        return jsonify({
+            "success": True,
+            "job": job.to_dict()
+        })
+    except Exception as e:
+        logger.error(f"Error getting job status: {str(e)}")
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+
+@app.route("/api/jobs/<job_id>/result", methods=["GET"])
+def get_job_result(job_id: str):
+    """Get the result of a completed job"""
+    try:
+        job = job_manager.get_job(job_id)
+
+        if not job:
+            return jsonify({"error": "Job not found"}), 404
+
+        if job.status == JobStatus.PENDING:
+            return jsonify({
+                "success": False,
+                "status": "pending",
+                "message": "Job is still pending"
+            })
+
+        if job.status == JobStatus.RUNNING:
+            return jsonify({
+                "success": False,
+                "status": "running",
+                "message": "Job is still running",
+                "progress": job.progress
+            })
+
+        if job.status == JobStatus.FAILED:
+            return jsonify({
+                "success": False,
+                "status": "failed",
+                "error": job.error
+            })
+
+        if job.status == JobStatus.CANCELLED:
+            return jsonify({
+                "success": False,
+                "status": "cancelled",
+                "message": "Job was cancelled"
+            })
+
+        # Job completed - read result from file
+        try:
+            resolved_output_file = resolve_windows_path(job.output_file) if job.output_file.startswith('F:') else job.output_file
+
+            with open(resolved_output_file, 'r', encoding='utf-8') as f:
+                result_data = json.load(f)
+
+            return jsonify({
+                "success": True,
+                "status": "completed",
+                "job": job.to_dict(),
+                "result": result_data
+            })
+
+        except FileNotFoundError:
+            return jsonify({
+                "success": False,
+                "error": "Result file not found"
+            }), 404
+
+    except Exception as e:
+        logger.error(f"Error getting job result: {str(e)}")
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+
+@app.route("/api/jobs/<job_id>/cancel", methods=["POST"])
+def cancel_job(job_id: str):
+    """Cancel a running or pending job"""
+    try:
+        success = job_manager.cancel_job(job_id)
+
+        if success:
+            return jsonify({
+                "success": True,
+                "message": f"Job {job_id} cancelled"
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "message": "Job not found or cannot be cancelled"
+            }), 400
+
+    except Exception as e:
+        logger.error(f"Error cancelling job: {str(e)}")
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+
+@app.route("/api/jobs/cleanup", methods=["POST"])
+def cleanup_jobs():
+    """Cleanup old jobs (admin endpoint)"""
+    try:
+        count = job_manager.cleanup_old_jobs()
+        return jsonify({
+            "success": True,
+            "message": f"Cleaned up {count} old jobs"
+        })
+    except Exception as e:
+        logger.error(f"Error cleaning up jobs: {str(e)}")
         return jsonify({"error": f"Server error: {str(e)}"}), 500
 
 
