@@ -332,6 +332,7 @@ class JobManager:
                                   f"({savings['savings_tokens_estimate']} tokens)")
 
                         # Prepare for AI analysis (future feature)
+                        # Use JSON format for AI payload to ensure jq compatibility
                         ai_payload = prepare_toon_for_ai_analysis(
                             toon_data=toon_output,
                             scan_metadata={
@@ -339,7 +340,9 @@ class JobManager:
                                 "tool_name": job.tool_name,
                                 "scan_date": datetime.now().isoformat(),
                                 "target": job.params.get("target", "unknown")
-                            }
+                            },
+                            json_data=full_result,
+                            output_format="json"
                         )
 
                         # Save AI-ready payload for future processing
@@ -347,7 +350,7 @@ class JobManager:
                         with open(ai_payload_path, 'w', encoding='utf-8') as f:
                             json.dump(ai_payload, f, indent=2, ensure_ascii=False)
 
-                        logger.info(f"Saved AI-ready payload to {ai_payload_path}")
+                        logger.info(f"Saved AI-ready payload to {ai_payload_path} (JSON format, jq-compatible)")
                         logger.info("AI payload ready for future LLM analysis (API key integration pending)")
 
                     else:
