@@ -143,33 +143,56 @@ def convert_scan_result_to_toon(scan_result: Dict[str, Any]) -> Optional[str]:
         return None
 
 
-def prepare_toon_for_ai_analysis(toon_data: str, scan_metadata: Dict[str, Any]) -> Dict[str, Any]:
+def prepare_toon_for_ai_analysis(
+    toon_data: str,
+    scan_metadata: Dict[str, Any],
+    json_data: Optional[Dict[str, Any]] = None,
+    output_format: str = "toon"
+) -> Dict[str, Any]:
     """
-    Prepare TOON formatted scan results for AI analysis.
+    Prepare scan results for AI analysis in either TOON or JSON format.
 
-    This function creates a structured payload that combines the TOON-formatted
-    scan results with metadata, ready to be sent to an AI service for analysis.
+    This function creates a structured payload that combines the scan results
+    with metadata, ready to be sent to an AI service for analysis. The data
+    can be in TOON format (compact, token-optimized) or JSON format (standard,
+    jq-compatible).
 
     Args:
         toon_data: TOON formatted scan result string
         scan_metadata: Metadata about the scan (tool, target, timestamp, etc.)
+        json_data: Optional JSON data (required if output_format is "json")
+        output_format: Format for the data field - "toon" or "json" (default: "toon")
 
     Returns:
         Dictionary ready for AI service consumption
 
     Example:
+        # TOON format (compact)
         payload = prepare_toon_for_ai_analysis(
             toon_data=toon_string,
-            scan_metadata={
-                "tool_name": "semgrep",
-                "target": "/path/to/code",
-                "scan_date": "2025-12-04"
-            }
+            scan_metadata={...},
+            output_format="toon"
+        )
+
+        # JSON format (jq-compatible)
+        payload = prepare_toon_for_ai_analysis(
+            toon_data=toon_string,
+            scan_metadata={...},
+            json_data=original_json,
+            output_format="json"
         )
     """
+    # Determine the data to include based on output format
+    if output_format == "json" and json_data:
+        data_content = json_data
+        data_format = "json"
+    else:
+        data_content = toon_data
+        data_format = "toon"
+
     return {
-        "format": "toon",
-        "data": toon_data,
+        "format": data_format,
+        "data": data_content,
         "metadata": scan_metadata,
         "ai_ready": True,
         "instructions": {
