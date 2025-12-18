@@ -34,18 +34,15 @@ This project provides a bridge between Claude Code and industry-standard securit
 ```
 ┌─────────────────┐         ┌──────────────────┐         ┌─────────────────┐
 │  Claude Code    │  MCP    │  MCP Client      │  HTTP   │  SAST Server    │
-│  (Windows)      │◄───────►│  sast_mcp_client │◄───────►│  (Kali Linux)   │
-│                 │         │  .py             │         │                 │
+│  (Windows)      │◄───────►│  client/         │◄───────►│  server/        │
+│                 │         │  sast_mcp_client │         │  (Kali Linux)   │
 └─────────────────┘         └──────────────────┘         └─────────────────┘
                                                                   │
                                                                   ▼
                                                           ┌─────────────────┐
                                                           │  Security Tools │
-                                                          │  - Semgrep      │
-                                                          │  - Bandit       │
-                                                          │  - TruffleHog   │
-                                                          │  - Checkov      │
-                                                          │  - And more...  │
+                                                          │  (installed via │
+                                                          │  tools/install) │
                                                           └─────────────────┘
 ```
 
@@ -125,13 +122,13 @@ cp .env.example .env
 **Option A: Full-Featured Server** (recommended for complete functionality)
 
 ```bash
-python3 sast_server.py --port 6000
+python3 server/sast_server.py --port 6000
 ```
 
 **Option B: Simple Server** (no external dependencies, basic functionality)
 
 ```bash
-python3 simple_sast_server.py --port 6000
+python3 server/simple_sast_server.py --port 6000
 ```
 
 #### 5. Configure Claude Code (on Windows)
@@ -154,7 +151,7 @@ Add the MCP server configuration to your `.claude.json`:
       "type": "stdio",
       "command": "python",
       "args": [
-        "/path/to/MCP-SAST-Server/sast_mcp_client.py",
+        "/path/to/sast-mcp/client/sast_mcp_client.py",
         "--server",
         "http://YOUR_KALI_IP:6000"
       ]
@@ -164,17 +161,17 @@ Add the MCP server configuration to your `.claude.json`:
 ```
 
 **Important: Update these values:**
-- `/path/to/MCP-SAST-Server/sast_mcp_client.py` - Full path to the MCP client script
+- `/path/to/sast-mcp/client/sast_mcp_client.py` - Full path to the MCP client script
 - `YOUR_KALI_IP` - Your Kali Linux machine's IP address (e.g., `192.168.1.100`)
 - Port `6000` - Change if you configured a different port
 
 **Windows Path Examples:**
-- `C:/Projects/MCP-SAST-Server/sast_mcp_client.py`
-- `F:/work/MCP-SAST-Server/sast_mcp_client.py`
+- `C:/Projects/sast-mcp/client/sast_mcp_client.py`
+- `F:/work/sast-mcp/client/sast_mcp_client.py`
 
 **Linux/Mac Path Examples:**
-- `/home/user/MCP-SAST-Server/sast_mcp_client.py`
-- `~/projects/MCP-SAST-Server/sast_mcp_client.py`
+- `/home/user/sast-mcp/client/sast_mcp_client.py`
+- `~/projects/sast-mcp/client/sast_mcp_client.py`
 
 #### 6. Verify Installation
 
@@ -307,7 +304,7 @@ We provide an automated installation script that installs all required tools:
 ```bash
 # On your Kali Linux machine
 cd /path/to/sast-mcp
-sudo bash install_tools.sh
+sudo bash tools/install_tools.sh
 ```
 
 The script will:
@@ -320,7 +317,7 @@ The script will:
 
 **Installation takes 5-15 minutes depending on your internet speed.**
 
-**⚠ Having installation issues?** Check [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for solutions to common problems like stuck downloads, version conflicts, or outdated vendor links.
+**⚠ Having installation issues?** Common problems include stuck downloads, version conflicts, or network timeouts. Try running the script again or install tools manually.
 
 ### Manual Installation
 
@@ -708,58 +705,40 @@ This will block until the scan completes (not recommended for long-running scans
 ## Project Structure
 
 ```
-MCP-SAST-Server/
-├── sast_server.py              # Full-featured SAST server (recommended)
-├── simple_sast_server.py       # Lightweight alternative (minimal dependencies)
-├── sast_mcp_client.py          # MCP client for Claude Code integration
-├── toon_converter.py           # TOON format converter for LLM optimization
-├── ai_analysis.py              # AI analysis utilities (future feature)
+sast-mcp/
+├── client/
+│   └── sast_mcp_client.py      # MCP client for Claude Code integration
+├── server/
+│   ├── sast_server.py          # Full-featured SAST server (recommended)
+│   └── simple_sast_server.py   # Lightweight alternative (minimal dependencies)
+├── tools/
+│   ├── install_tools.sh        # Automated security tools installation script
+│   ├── toon_converter.py       # TOON format converter for LLM optimization
+│   └── ai_analysis.py          # AI analysis utilities (future feature)
 ├── requirements.txt            # Python dependencies
 ├── .env.example                # Server configuration template
 ├── config.example.json         # Claude Code configuration examples
-├── .gitignore                  # Git ignore rules
 ├── LICENSE                     # MIT License
-├── CONTRIBUTING.md             # Contribution guidelines
-├── TOON_CONVERTER.md           # TOON format integration documentation
-└── README.md                   # This file (main documentation)
+└── README.md                   # This documentation
 ```
 
-### File Descriptions
+### Simple & Clean Architecture
 
-**Core Files:**
-- `sast_server.py` - Main SAST server with .env support, path resolution, and TOON conversion
-- `sast_mcp_client.py` - MCP client that connects Claude Code to the server
-- `simple_sast_server.py` - Alternative server with no external dependencies
-- `toon_converter.py` - TOON format converter for 30-60% token reduction
-- `ai_analysis.py` - AI-powered analysis utilities (stub for future implementation)
+**client/** - MCP client that connects Claude Code to the SAST server via HTTP
 
-**Configuration:**
-- `.env.example` - Environment variables template for server configuration
-- `config.example.json` - Claude Code integration examples for different setups
+**server/** - Two server options:
+- `sast_server.py` - Full-featured with TOON conversion and all features
+- `simple_sast_server.py` - Minimal dependencies, basic functionality
 
-**Documentation:**
-- `README.md` - Complete project documentation (you're reading it!)
-- `TOON_CONVERTER.md` - **TOON format integration guide** (see for AI analysis features)
-- `CONTRIBUTING.md` - Guidelines for contributing to the project
-- `LICENSE` - MIT License terms
+**tools/** - Utilities and installation scripts:
+- `install_tools.sh` - Automated installation of all 23+ security tools
+- `toon_converter.py` - TOON format converter (30-60% token reduction)
+- `ai_analysis.py` - AI-powered scan analysis (coming soon)
 
-### TOON Format & AI Analysis
-
-The server now includes **automatic TOON format conversion** for all scan results. TOON (Token-Oriented Object Notation) reduces token usage by 30-60% compared to JSON, enabling more efficient LLM-powered analysis.
-
-**Features:**
-- ✅ Automatic conversion to TOON format for all scans
-- ✅ AI-ready payloads generated for future analysis
-- ✅ Token savings statistics and logging
-- 🚧 AI-powered summarization (coming soon)
-- 🚧 Intelligent finding prioritization (coming soon)
-- 🚧 Automated remediation guidance (coming soon)
-
-**Learn More:** See [TOON_CONVERTER.md](TOON_CONVERTER.md) for complete documentation on:
-- TOON format integration
-- Token savings analysis
-- AI analysis configuration (future)
-- Usage examples and API endpoints
+**Configuration files:**
+- `requirements.txt` - Python package dependencies
+- `.env.example` - Server environment configuration template
+- `config.example.json` - Claude Code MCP configuration examples
 
 ## Troubleshooting
 
