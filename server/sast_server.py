@@ -76,8 +76,11 @@ from enum import Enum
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 # Import TOON converter utilities
-from toon_converter import (
+from tools.toon_converter import (
     convert_scan_result_to_toon,
     is_toon_available,
     calculate_token_savings,
@@ -85,7 +88,7 @@ from toon_converter import (
 )
 
 # Import AI analysis utilities
-from ai_analysis import (
+from tools.ai_analysis import (
     analyze_scan_with_ai,
     is_ai_configured,
     summarize_findings,
