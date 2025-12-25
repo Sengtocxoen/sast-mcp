@@ -145,8 +145,68 @@ DEFAULT_OUTPUT_DIR = os.environ.get("DEFAULT_OUTPUT_DIR", "/var/sast-mcp/scan-re
 MAX_WORKERS = int(os.environ.get("MAX_WORKERS", 10))  # Max concurrent scan jobs
 JOB_RETENTION_HOURS = int(os.environ.get("JOB_RETENTION_HOURS", 72))  # Keep job data for 72 hours
 
+# Parallel Scan Configuration
+MAX_PARALLEL_SCANS = int(os.environ.get("MAX_PARALLEL_SCANS", 3))  # Max 3 parallel file scans
+SCAN_WAIT_TIMEOUT = int(os.environ.get("SCAN_WAIT_TIMEOUT", 1800))  # 30 minutes wait timeout
+
 # Initialize Flask application
 app = Flask(__name__)
+
+# ============================================================================
+# PARALLEL SCAN CONTROL
+# ============================================================================
+
+# Semaphore to limit concurrent scans to MAX_PARALLEL_SCANS (default 3)
+scan_semaphore = threading.Semaphore(MAX_PARALLEL_SCANS)
+scan_stats_lock = threading.Lock()
+scan_stats = {
+    "active_scans": 0,
+    "total_scans": 0,
+    "queued_scans": 0,
+    "completed_scans": 0,
+    "failed_scans": 0
+}
+
+def acquire_scan_slot(timeout: int = SCAN_WAIT_TIMEOUT) -> bool:
+    """
+    Acquire a slot for parallel scanning with timeout.
+    Waits up to 30 minutes (default) if all slots are busy.
+
+    Args:
+        timeout: Maximum wait time in seconds (default: 1800 = 30 minutes)
+
+    Returns:
+        bool: True if slot acquired, False if timeout
+    """
+    global scan_stats
+
+    with scan_stats_lock:
+        scan_stats["queued_scans"] += 1
+
+    logger.info(f"Attempting to acquire scan slot (timeout: {timeout}s, active: {scan_stats['active_scans']}/{MAX_PARALLEL_SCANS})")
+
+    acquired = scan_semaphore.acquire(timeout=timeout)
+
+    with scan_stats_lock:
+        scan_stats["queued_scans"] -= 1
+        if acquired:
+            scan_stats["active_scans"] += 1
+            scan_stats["total_scans"] += 1
+            logger.info(f"Scan slot acquired (active: {scan_stats['active_scans']}/{MAX_PARALLEL_SCANS})")
+        else:
+            logger.warning(f"Failed to acquire scan slot after {timeout}s timeout")
+
+    return acquired
+
+def release_scan_slot():
+    """Release a scan slot back to the pool."""
+    global scan_stats
+
+    with scan_stats_lock:
+        scan_stats["active_scans"] = max(0, scan_stats["active_scans"] - 1)
+
+    scan_semaphore.release()
+    logger.info(f"Scan slot released (active: {scan_stats['active_scans']}/{MAX_PARALLEL_SCANS})")
 
 # ============================================================================
 # BACKGROUND JOB MANAGEMENT SYSTEM
@@ -257,27 +317,52 @@ class JobManager:
         return future
 
     def _execute_job(self, job: Job, work_func, *args, **kwargs):
-        """Execute a job in the background"""
+        """Execute a job in the background with parallel scan control"""
+        global scan_stats
+
         try:
-            job.status = JobStatus.RUNNING
-            job.started_at = datetime.now()
-            logger.info(f"Job {job.job_id} started")
+            # Acquire scan slot with 30-minute timeout
+            logger.info(f"Job {job.job_id} waiting for scan slot...")
+            slot_acquired = acquire_scan_slot(timeout=SCAN_WAIT_TIMEOUT)
 
-            # Execute the work function
-            result = work_func(*args, **kwargs)
+            if not slot_acquired:
+                # Timeout waiting for slot
+                job.status = JobStatus.FAILED
+                job.completed_at = datetime.now()
+                job.error = f"Timeout waiting for scan slot after {SCAN_WAIT_TIMEOUT}s (30 minutes). All {MAX_PARALLEL_SCANS} scan slots were busy."
+                logger.error(f"Job {job.job_id} failed: {job.error}")
 
-            # Save result to file
-            self._save_job_result(job, result)
+                with scan_stats_lock:
+                    scan_stats["failed_scans"] += 1
+                return
 
-            job.status = JobStatus.COMPLETED
-            job.completed_at = datetime.now()
-            job.result = {
-                "success": True,
-                "output_file": job.output_file,
-                "summary": result.get("summary", {})
-            }
+            try:
+                job.status = JobStatus.RUNNING
+                job.started_at = datetime.now()
+                logger.info(f"Job {job.job_id} started (slot acquired)")
 
-            logger.info(f"Job {job.job_id} completed successfully")
+                # Execute the work function
+                result = work_func(*args, **kwargs)
+
+                # Save result to file
+                self._save_job_result(job, result)
+
+                job.status = JobStatus.COMPLETED
+                job.completed_at = datetime.now()
+                job.result = {
+                    "success": True,
+                    "output_file": job.output_file,
+                    "summary": result.get("summary", {})
+                }
+
+                logger.info(f"Job {job.job_id} completed successfully")
+
+                with scan_stats_lock:
+                    scan_stats["completed_scans"] += 1
+
+            finally:
+                # Always release the scan slot
+                release_scan_slot()
 
         except Exception as e:
             job.status = JobStatus.FAILED
@@ -285,6 +370,9 @@ class JobManager:
             job.error = str(e)
             logger.error(f"Job {job.job_id} failed: {str(e)}")
             logger.error(traceback.format_exc())
+
+            with scan_stats_lock:
+                scan_stats["failed_scans"] += 1
 
     def _save_job_result(self, job: Job, result: Dict[str, Any]):
         """Save job result to output file (JSON and TOON formats)"""
@@ -2208,6 +2296,199 @@ def generic_command():
         return jsonify(result)
     except Exception as e:
         logger.error(f"Error in command endpoint: {str(e)}")
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+
+@app.route("/api/util/scan-project-structure", methods=["POST"])
+def scan_project_structure():
+    """
+    Deeply scan project structure to find dependency files and project metadata.
+
+    Parameters:
+    - project_path: Path to project directory
+    - deep_scan: Recursively scan subdirectories (boolean)
+    - include_hidden: Include hidden files/directories (boolean)
+    """
+    try:
+        params = request.json
+        project_path = params.get("project_path", ".")
+        deep_scan = params.get("deep_scan", True)
+        include_hidden = params.get("include_hidden", False)
+
+        # Resolve Windows path to Linux mount path
+        resolved_path = resolve_windows_path(project_path)
+
+        if not os.path.exists(resolved_path):
+            return jsonify({
+                "error": f"Project path does not exist: {resolved_path}",
+                "original_path": project_path
+            }), 404
+
+        # Dependency file patterns
+        dependency_files = {
+            "python": ["requirements.txt", "Pipfile", "pyproject.toml", "setup.py", "setup.cfg", "poetry.lock"],
+            "nodejs": ["package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml"],
+            "go": ["go.mod", "go.sum", "Gopkg.toml", "Gopkg.lock"],
+            "ruby": ["Gemfile", "Gemfile.lock", ".ruby-version"],
+            "java": ["pom.xml", "build.gradle", "build.gradle.kts", "gradle.properties"],
+            "php": ["composer.json", "composer.lock"],
+            "rust": ["Cargo.toml", "Cargo.lock"],
+            "dotnet": ["*.csproj", "*.fsproj", "*.vbproj", "packages.config", "*.sln"],
+            "terraform": ["*.tf", "terraform.tfvars", "terraform.tfstate"],
+            "docker": ["Dockerfile", "docker-compose.yml", "docker-compose.yaml", ".dockerignore"],
+            "kubernetes": ["*.yaml", "*.yml"],
+            "config": [".env", ".env.example", "config.json", "config.yaml", "config.yml"]
+        }
+
+        found_files = {}
+        detected_types = set()
+        scan_recommendations = {}
+
+        # Walk the directory tree
+        max_depth = 10 if deep_scan else 1
+
+        for root, dirs, files in os.walk(resolved_path):
+            # Calculate depth
+            depth = root[len(resolved_path):].count(os.sep)
+            if depth >= max_depth:
+                dirs[:] = []  # Don't recurse deeper
+                continue
+
+            # Filter hidden directories
+            if not include_hidden:
+                dirs[:] = [d for d in dirs if not d.startswith('.')]
+
+            # Check for dependency files
+            for project_type, patterns in dependency_files.items():
+                for pattern in patterns:
+                    if '*' in pattern:
+                        # Handle wildcard patterns
+                        import fnmatch
+                        matching_files = [f for f in files if fnmatch.fnmatch(f, pattern)]
+                        for matched_file in matching_files:
+                            file_path = os.path.join(root, matched_file)
+                            rel_path = os.path.relpath(file_path, resolved_path)
+
+                            if project_type not in found_files:
+                                found_files[project_type] = []
+                            found_files[project_type].append(rel_path)
+                            detected_types.add(project_type)
+                    else:
+                        # Exact filename match
+                        if pattern in files:
+                            file_path = os.path.join(root, pattern)
+                            rel_path = os.path.relpath(file_path, resolved_path)
+
+                            if project_type not in found_files:
+                                found_files[project_type] = []
+                            found_files[project_type].append(rel_path)
+                            detected_types.add(project_type)
+
+        # Generate scan recommendations
+        if "python" in detected_types:
+            scan_recommendations["python"] = {
+                "tools": ["bandit", "safety"],
+                "targets": found_files.get("python", []),
+                "commands": [
+                    f"bandit -r {resolved_path}",
+                    f"safety check -r {resolved_path}/requirements.txt" if any("requirements.txt" in f for f in found_files.get("python", [])) else None
+                ]
+            }
+
+        if "nodejs" in detected_types:
+            scan_recommendations["nodejs"] = {
+                "tools": ["npm-audit", "eslint-security"],
+                "targets": found_files.get("nodejs", []),
+                "commands": [
+                    f"npm audit --json" if any("package.json" in f for f in found_files.get("nodejs", [])) else None,
+                    f"eslint {resolved_path}"
+                ]
+            }
+
+        if "go" in detected_types:
+            scan_recommendations["go"] = {
+                "tools": ["gosec"],
+                "targets": found_files.get("go", []),
+                "commands": [f"gosec -fmt=json ./..."]
+            }
+
+        if "ruby" in detected_types:
+            scan_recommendations["ruby"] = {
+                "tools": ["brakeman"],
+                "targets": found_files.get("ruby", []),
+                "commands": [f"brakeman -p {resolved_path} -f json"]
+            }
+
+        if "terraform" in detected_types:
+            scan_recommendations["terraform"] = {
+                "tools": ["tfsec", "checkov"],
+                "targets": found_files.get("terraform", []),
+                "commands": [
+                    f"tfsec {resolved_path} --format json",
+                    f"checkov -d {resolved_path} -o json"
+                ]
+            }
+
+        if "docker" in detected_types:
+            scan_recommendations["docker"] = {
+                "tools": ["trivy", "checkov"],
+                "targets": found_files.get("docker", []),
+                "commands": [
+                    f"trivy config {resolved_path} --format json",
+                    f"checkov -d {resolved_path} --framework dockerfile -o json"
+                ]
+            }
+
+        # Universal scan recommendations
+        scan_recommendations["universal"] = {
+            "tools": ["semgrep", "trufflehog", "gitleaks"],
+            "targets": [resolved_path],
+            "commands": [
+                f"semgrep --config=auto --json {resolved_path}",
+                f"trufflehog filesystem {resolved_path} --json",
+                f"gitleaks detect --source={resolved_path} --report-format=json"
+            ]
+        }
+
+        return jsonify({
+            "success": True,
+            "project_path": project_path,
+            "resolved_path": resolved_path,
+            "detected_types": list(detected_types),
+            "found_files": found_files,
+            "scan_recommendations": scan_recommendations,
+            "scan_statistics": {
+                "total_dependency_files": sum(len(files) for files in found_files.values()),
+                "project_types_detected": len(detected_types),
+                "recommended_tools": list(set(
+                    tool for rec in scan_recommendations.values()
+                    for tool in rec.get("tools", [])
+                ))
+            }
+        })
+
+    except Exception as e:
+        logger.error(f"Error scanning project structure: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+
+@app.route("/api/util/scan-stats", methods=["GET"])
+def get_scan_stats():
+    """Get current parallel scan statistics"""
+    try:
+        with scan_stats_lock:
+            current_stats = scan_stats.copy()
+
+        return jsonify({
+            "success": True,
+            "max_parallel_scans": MAX_PARALLEL_SCANS,
+            "scan_wait_timeout_seconds": SCAN_WAIT_TIMEOUT,
+            "statistics": current_stats,
+            "slots_available": MAX_PARALLEL_SCANS - current_stats["active_scans"]
+        })
+    except Exception as e:
+        logger.error(f"Error getting scan stats: {str(e)}")
         return jsonify({"error": f"Server error: {str(e)}"}), 500
 
 
