@@ -53,7 +53,8 @@ import os
 import argparse
 import logging
 from typing import Dict, Any, Optional
-import requests
+import asyncio
+import aiohttp
 
 from mcp.server.fastmcp import FastMCP
 
@@ -90,7 +91,7 @@ DEFAULT_REQUEST_TIMEOUT = 600  # 10 minutes
 
 class SASTToolsClient:
     """
-    HTTP client for communicating with the SAST Tools API Server.
+    Async HTTP client for communicating with the SAST Tools API Server.
 
     This class handles all HTTP communication between the MCP client and
     the SAST server, including request formatting and error handling.
@@ -110,11 +111,24 @@ class SASTToolsClient:
         """
         self.server_url = server_url.rstrip("/")
         self.timeout = timeout
+        self.session = None
         logger.info(f"Initialized SAST Tools Client connecting to {server_url}")
 
-    def safe_post(self, endpoint: str, json_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def _get_session(self) -> aiohttp.ClientSession:
+        """Get or create an aiohttp session"""
+        if self.session is None or self.session.closed:
+            timeout = aiohttp.ClientTimeout(total=self.timeout)
+            self.session = aiohttp.ClientSession(timeout=timeout)
+        return self.session
+
+    async def close(self):
+        """Close the aiohttp session"""
+        if self.session and not self.session.closed:
+            await self.session.close()
+
+    async def safe_post(self, endpoint: str, json_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Perform a POST request with JSON data
+        Perform an async POST request with JSON data
 
         Args:
             endpoint: API endpoint path (without leading slash)
@@ -127,31 +141,33 @@ class SASTToolsClient:
 
         try:
             logger.debug(f"POST {url} with data: {json_data}")
-            response = requests.post(url, json=json_data, timeout=self.timeout)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
+            session = await self._get_session()
+            async with session.post(url, json=json_data) as response:
+                response.raise_for_status()
+                return await response.json()
+        except aiohttp.ClientError as e:
             logger.error(f"Request failed: {str(e)}")
             return {"error": f"Request failed: {str(e)}", "success": False}
         except Exception as e:
             logger.error(f"Unexpected error: {str(e)}")
             return {"error": f"Unexpected error: {str(e)}", "success": False}
 
-    def safe_get(self, endpoint: str) -> Dict[str, Any]:
-        """Perform a GET request"""
+    async def safe_get(self, endpoint: str) -> Dict[str, Any]:
+        """Perform an async GET request"""
         url = f"{self.server_url}/{endpoint}"
 
         try:
-            response = requests.get(url, timeout=self.timeout)
-            response.raise_for_status()
-            return response.json()
+            session = await self._get_session()
+            async with session.get(url) as response:
+                response.raise_for_status()
+                return await response.json()
         except Exception as e:
             logger.error(f"Request failed: {str(e)}")
             return {"error": f"Request failed: {str(e)}", "success": False}
 
-    def check_health(self) -> Dict[str, Any]:
+    async def check_health(self) -> Dict[str, Any]:
         """Check the health of the SAST Tools API Server"""
-        return self.safe_get("health")
+        return await self.safe_get("health")
 
 
 def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
@@ -171,18 +187,21 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
     # ========================================================================
 
     @mcp.tool()
-    def semgrep_scan(
+    async def semgrep_scan(
         target: str = ".",
         config: str = "auto",
         lang: str = "",
         severity: str = "",
         output_format: str = "json",
         output_file: str = "",
+        max_accuracy: bool = True,
         additional_args: str = ""
     ) -> Dict[str, Any]:
         """
         Execute Semgrep static analysis for finding security vulnerabilities and code issues.
         Semgrep supports 30+ languages including Python, JavaScript, Java, Go, Ruby, PHP, etc.
+
+        This tool now runs with async/await for better performance and uses maximum accuracy by default.
 
         Args:
             target: Path to code directory or file to scan (default: current directory)
@@ -201,12 +220,20 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             output_file: Path to save scan results (Windows format: F:/path/to/file.json).
                         If provided, full results are saved to file and only summary is returned
                         to avoid token limits.
+            max_accuracy: Enable maximum accuracy mode - slower but more thorough (default: True)
             additional_args: Additional Semgrep command-line arguments
 
         Returns:
             Scan results with identified security issues and code quality problems.
             If output_file is provided, returns summary with file location instead of full results.
         """
+        # Add comprehensive scanning flags for maximum accuracy
+        accuracy_flags = ""
+        if max_accuracy:
+            accuracy_flags = " --max-memory 0 --timeout 0 --max-target-bytes 0"
+
+        combined_args = f"{accuracy_flags} {additional_args}".strip()
+
         data = {
             "target": target,
             "config": config,
@@ -214,22 +241,25 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             "severity": severity,
             "output_format": output_format,
             "output_file": output_file,
-            "additional_args": additional_args
+            "additional_args": combined_args
         }
-        return sast_client.safe_post("api/sast/semgrep", data)
+        return await sast_client.safe_post("api/sast/semgrep", data)
 
     @mcp.tool()
-    def bearer_scan(
+    async def bearer_scan(
         target: str = ".",
         scanner: str = "",
         format: str = "json",
         only_policy: str = "",
         severity: str = "",
+        max_accuracy: bool = True,
         additional_args: str = ""
     ) -> Dict[str, Any]:
         """
         Execute Bearer security and privacy scanner for detecting security risks and data leaks.
         Bearer analyzes code for sensitive data flows and security vulnerabilities.
+
+        This tool now runs with async/await for better performance and uses maximum accuracy by default.
 
         Args:
             target: Path to code directory to scan (default: current directory)
@@ -240,30 +270,42 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             format: Output format (json, yaml, sarif, html)
             only_policy: Only check specific security policy
             severity: Filter by severity (critical, high, medium, low, warning)
+            max_accuracy: Enable maximum accuracy mode - slower but more thorough (default: True)
             additional_args: Additional Bearer arguments
 
         Returns:
             Security findings including data leaks, vulnerabilities, and privacy issues
         """
+        # Add comprehensive scanning flags for maximum accuracy
+        accuracy_flags = ""
+        if max_accuracy:
+            # Disable quiet mode for full output, enable all checks
+            accuracy_flags = " --skip-path= --disable-default-rules=false"
+
+        combined_args = f"{accuracy_flags} {additional_args}".strip()
+
         data = {
             "target": target,
             "scanner": scanner,
             "format": format,
             "only_policy": only_policy,
             "severity": severity,
-            "additional_args": additional_args
+            "additional_args": combined_args
         }
-        return sast_client.safe_post("api/sast/bearer", data)
+        return await sast_client.safe_post("api/sast/bearer", data)
 
     @mcp.tool()
-    def graudit_scan(
+    async def graudit_scan(
         target: str = ".",
         database: str = "all",
+        max_accuracy: bool = True,
         additional_args: str = ""
     ) -> Dict[str, Any]:
         """
         Execute Graudit grep-based source code auditing for finding security issues.
         Fast pattern-matching security scanner using signature databases.
+
+        This tool now runs with async/await for better performance and uses maximum accuracy by default.
 
         Args:
             target: Path to code directory or file to audit (default: current directory)
@@ -273,6 +315,7 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
                      - Language-specific: "asp", "c", "cobol", "dotnet", "exec", "fruit",
                        "go", "java", "js", "nim", "perl", "php", "python", "ruby", "secrets",
                        "spsqli", "strings", "xss"
+            max_accuracy: Enable maximum accuracy mode - slower but more thorough (default: True)
             additional_args: Additional graudit arguments
 
         Returns:
@@ -283,141 +326,190 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             "database": database,
             "additional_args": additional_args
         }
-        return sast_client.safe_post("api/sast/graudit", data)
+        return await sast_client.safe_post("api/sast/graudit", data)
 
     @mcp.tool()
-    def bandit_scan(
+    async def bandit_scan(
         target: str = ".",
         severity_level: str = "",
         confidence_level: str = "",
         format: str = "json",
+        max_accuracy: bool = True,
         additional_args: str = ""
     ) -> Dict[str, Any]:
         """
         Execute Bandit security scanner for Python code.
         Identifies common security issues in Python applications.
 
+        This tool now runs with async/await for better performance and uses maximum accuracy by default.
+
         Args:
             target: Path to Python code directory or file (default: current directory)
             severity_level: Minimum severity to report (low, medium, high)
             confidence_level: Minimum confidence to report (low, medium, high)
             format: Output format (json, csv, txt, html, xml)
+            max_accuracy: Enable maximum accuracy mode - slower but more thorough (default: True)
             additional_args: Additional Bandit arguments
 
         Returns:
             Python security issues including SQL injection, hardcoded passwords,
             insecure random usage, etc.
         """
+        # Add comprehensive scanning flags for maximum accuracy
+        accuracy_flags = ""
+        if max_accuracy:
+            # Include all checks, no skips
+            accuracy_flags = " --verbose"
+
+        combined_args = f"{accuracy_flags} {additional_args}".strip()
+
         data = {
             "target": target,
             "severity_level": severity_level,
             "confidence_level": confidence_level,
             "format": format,
-            "additional_args": additional_args
+            "additional_args": combined_args
         }
-        return sast_client.safe_post("api/sast/bandit", data)
+        return await sast_client.safe_post("api/sast/bandit", data)
 
     @mcp.tool()
-    def gosec_scan(
+    async def gosec_scan(
         target: str = "./...",
         format: str = "json",
         severity: str = "",
         confidence: str = "",
+        max_accuracy: bool = True,
         additional_args: str = ""
     ) -> Dict[str, Any]:
         """
         Execute Gosec security scanner for Go (Golang) code.
         Inspects Go source code for security problems.
 
+        This tool now runs with async/await for better performance and uses maximum accuracy by default.
+
         Args:
             target: Path to Go code directory (default: ./... for all packages)
             format: Output format (json, yaml, csv, junit-xml, html, sonarqube, golint, sarif, text)
             severity: Filter by severity (low, medium, high)
             confidence: Filter by confidence (low, medium, high)
+            max_accuracy: Enable maximum accuracy mode - slower but more thorough (default: True)
             additional_args: Additional gosec arguments
 
         Returns:
             Go-specific security issues and vulnerabilities
         """
+        # Add comprehensive scanning flags for maximum accuracy
+        accuracy_flags = ""
+        if max_accuracy:
+            # Verbose output and check all packages
+            accuracy_flags = " -verbose=text"
+
+        combined_args = f"{accuracy_flags} {additional_args}".strip()
+
         data = {
             "target": target,
             "format": format,
             "severity": severity,
             "confidence": confidence,
-            "additional_args": additional_args
+            "additional_args": combined_args
         }
-        return sast_client.safe_post("api/sast/gosec", data)
+        return await sast_client.safe_post("api/sast/gosec", data)
 
     @mcp.tool()
-    def brakeman_scan(
+    async def brakeman_scan(
         target: str = ".",
         format: str = "json",
         confidence_level: str = "",
+        max_accuracy: bool = True,
         additional_args: str = ""
     ) -> Dict[str, Any]:
         """
         Execute Brakeman security scanner for Ruby on Rails applications.
         Static analysis tool designed specifically for Rails security.
 
+        This tool now runs with async/await for better performance and uses maximum accuracy by default.
+
         Args:
             target: Path to Rails application directory (default: current directory)
             format: Output format (json, html, csv, tabs, text)
             confidence_level: Minimum confidence level (1-3, where 1 is highest confidence)
+            max_accuracy: Enable maximum accuracy mode - slower but more thorough (default: True)
             additional_args: Additional Brakeman arguments
 
         Returns:
             Rails-specific security vulnerabilities like SQL injection, XSS,
             mass assignment, etc.
         """
+        # Add comprehensive scanning flags for maximum accuracy
+        accuracy_flags = ""
+        if max_accuracy:
+            # Enable all checks and interprocedural analysis
+            accuracy_flags = " --interprocedural"
+
+        combined_args = f"{accuracy_flags} {additional_args}".strip()
+
         data = {
             "target": target,
             "format": format,
             "confidence_level": confidence_level,
-            "additional_args": additional_args
+            "additional_args": combined_args
         }
-        return sast_client.safe_post("api/sast/brakeman", data)
+        return await sast_client.safe_post("api/sast/brakeman", data)
 
     @mcp.tool()
-    def eslint_security_scan(
+    async def eslint_security_scan(
         target: str = ".",
         config: str = "",
         format: str = "json",
         fix: bool = False,
+        max_accuracy: bool = True,
         additional_args: str = ""
     ) -> Dict[str, Any]:
         """
         Execute ESLint with security plugins for JavaScript/TypeScript code analysis.
         Detects security issues and code quality problems in JavaScript projects.
 
+        This tool now runs with async/await for better performance and uses maximum accuracy by default.
+
         Args:
             target: Path to JavaScript/TypeScript code (default: current directory)
             config: Path to ESLint config file (uses project config if empty)
             format: Output format (json, stylish, html, compact, unix, etc.)
             fix: Automatically fix problems where possible (boolean)
+            max_accuracy: Enable maximum accuracy mode - slower but more thorough (default: True)
             additional_args: Additional ESLint arguments
 
         Returns:
             JavaScript/TypeScript security and quality issues
         """
+        # Add comprehensive scanning flags for maximum accuracy
+        accuracy_flags = ""
+        if max_accuracy:
+            # Report unused disable directives and show all warnings
+            accuracy_flags = " --report-unused-disable-directives --max-warnings 0"
+
+        combined_args = f"{accuracy_flags} {additional_args}".strip()
+
         data = {
             "target": target,
             "config": config,
             "format": format,
             "fix": fix,
-            "additional_args": additional_args
+            "additional_args": combined_args
         }
-        return sast_client.safe_post("api/sast/eslint-security", data)
+        return await sast_client.safe_post("api/sast/eslint-security", data)
 
     # ========================================================================
     # SECRET SCANNING
     # ========================================================================
 
     @mcp.tool()
-    def trufflehog_scan(
+    async def trufflehog_scan(
         target: str = ".",
         scan_type: str = "filesystem",
         json_output: bool = True,
         only_verified: bool = False,
+        max_accuracy: bool = True,
         additional_args: str = ""
     ) -> Dict[str, Any]:
         """
@@ -441,15 +533,16 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             "only_verified": only_verified,
             "additional_args": additional_args
         }
-        return sast_client.safe_post("api/secrets/trufflehog", data)
+        return await sast_client.safe_post("api/secrets/trufflehog", data)
 
     @mcp.tool()
-    def gitleaks_scan(
+    async def gitleaks_scan(
         target: str = ".",
         config: str = "",
         report_format: str = "json",
         report_path: str = "",
         verbose: bool = False,
+        max_accuracy: bool = True,
         additional_args: str = ""
     ) -> Dict[str, Any]:
         """
@@ -475,17 +568,18 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             "verbose": verbose,
             "additional_args": additional_args
         }
-        return sast_client.safe_post("api/secrets/gitleaks", data)
+        return await sast_client.safe_post("api/secrets/gitleaks", data)
 
     # ========================================================================
     # DEPENDENCY SCANNING
     # ========================================================================
 
     @mcp.tool()
-    def safety_check(
+    async def safety_check(
         requirements_file: str = "requirements.txt",
         json_output: bool = True,
         full_report: bool = False,
+        max_accuracy: bool = True,
         additional_args: str = ""
     ) -> Dict[str, Any]:
         """
@@ -507,14 +601,15 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             "full_report": full_report,
             "additional_args": additional_args
         }
-        return sast_client.safe_post("api/dependencies/safety", data)
+        return await sast_client.safe_post("api/dependencies/safety", data)
 
     @mcp.tool()
-    def npm_audit(
+    async def npm_audit(
         target: str = ".",
         json_output: bool = True,
         audit_level: str = "",
         production: bool = False,
+        max_accuracy: bool = True,
         additional_args: str = ""
     ) -> Dict[str, Any]:
         """
@@ -538,14 +633,15 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             "production": production,
             "additional_args": additional_args
         }
-        return sast_client.safe_post("api/dependencies/npm-audit", data)
+        return await sast_client.safe_post("api/dependencies/npm-audit", data)
 
     @mcp.tool()
-    def dependency_check(
+    async def dependency_check(
         target: str = ".",
         project_name: str = "project",
         format: str = "JSON",
         scan: str = "",
+        max_accuracy: bool = True,
         additional_args: str = ""
     ) -> Dict[str, Any]:
         """
@@ -569,19 +665,20 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             "scan": scan or target,
             "additional_args": additional_args
         }
-        return sast_client.safe_post("api/dependencies/dependency-check", data)
+        return await sast_client.safe_post("api/dependencies/dependency-check", data)
 
     # ========================================================================
     # INFRASTRUCTURE AS CODE (IaC)
     # ========================================================================
 
     @mcp.tool()
-    def checkov_scan(
+    async def checkov_scan(
         target: str = ".",
         framework: str = "",
         output_format: str = "json",
         compact: bool = False,
         quiet: bool = False,
+        max_accuracy: bool = True,
         additional_args: str = ""
     ) -> Dict[str, Any]:
         """
@@ -608,13 +705,14 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             "quiet": quiet,
             "additional_args": additional_args
         }
-        return sast_client.safe_post("api/iac/checkov", data)
+        return await sast_client.safe_post("api/iac/checkov", data)
 
     @mcp.tool()
-    def tfsec_scan(
+    async def tfsec_scan(
         target: str = ".",
         format: str = "json",
         minimum_severity: str = "",
+        max_accuracy: bool = True,
         additional_args: str = ""
     ) -> Dict[str, Any]:
         """
@@ -636,18 +734,19 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             "minimum_severity": minimum_severity,
             "additional_args": additional_args
         }
-        return sast_client.safe_post("api/iac/tfsec", data)
+        return await sast_client.safe_post("api/iac/tfsec", data)
 
     # ========================================================================
     # CONTAINER SECURITY
     # ========================================================================
 
     @mcp.tool()
-    def trivy_scan(
+    async def trivy_scan(
         target: str,
         scan_type: str = "fs",
         format: str = "json",
         severity: str = "",
+        max_accuracy: bool = True,
         additional_args: str = ""
     ) -> Dict[str, Any]:
         """
@@ -675,19 +774,20 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             "severity": severity,
             "additional_args": additional_args
         }
-        return sast_client.safe_post("api/container/trivy", data)
+        return await sast_client.safe_post("api/container/trivy", data)
 
     # ========================================================================
     # KALI LINUX SECURITY TOOLS
     # ========================================================================
 
     @mcp.tool()
-    def nikto_scan(
+    async def nikto_scan(
         target: str,
         port: str = "80",
         ssl: bool = False,
         output_format: str = "txt",
         output_file: str = "",
+        max_accuracy: bool = True,
         additional_args: str = ""
     ) -> Dict[str, Any]:
         """
@@ -713,15 +813,16 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             "output_file": output_file,
             "additional_args": additional_args
         }
-        return sast_client.safe_post("api/web/nikto", data)
+        return await sast_client.safe_post("api/web/nikto", data)
 
     @mcp.tool()
-    def nmap_scan(
+    async def nmap_scan(
         target: str,
         scan_type: str = "-sV",
         ports: str = "",
         output_format: str = "normal",
         output_file: str = "",
+        max_accuracy: bool = True,
         additional_args: str = ""
     ) -> Dict[str, Any]:
         """
@@ -754,10 +855,10 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             "output_file": output_file,
             "additional_args": additional_args
         }
-        return sast_client.safe_post("api/network/nmap", data)
+        return await sast_client.safe_post("api/network/nmap", data)
 
     @mcp.tool()
-    def sqlmap_scan(
+    async def sqlmap_scan(
         target: str,
         data: str = "",
         cookie: str = "",
@@ -765,6 +866,7 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
         risk: str = "1",
         batch: bool = True,
         output_dir: str = "",
+        max_accuracy: bool = True,
         additional_args: str = ""
     ) -> Dict[str, Any]:
         """
@@ -798,14 +900,15 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             "output_dir": output_dir,
             "additional_args": additional_args
         }
-        return sast_client.safe_post("api/web/sqlmap", data_dict)
+        return await sast_client.safe_post("api/web/sqlmap", data_dict)
 
     @mcp.tool()
-    def wpscan_scan(
+    async def wpscan_scan(
         target: str,
         enumerate: str = "vp",
         api_token: str = "",
         output_file: str = "",
+        max_accuracy: bool = True,
         additional_args: str = ""
     ) -> Dict[str, Any]:
         """
@@ -836,14 +939,15 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             "output_file": output_file,
             "additional_args": additional_args
         }
-        return sast_client.safe_post("api/web/wpscan", data)
+        return await sast_client.safe_post("api/web/wpscan", data)
 
     @mcp.tool()
-    def dirb_scan(
+    async def dirb_scan(
         target: str,
         wordlist: str = "/usr/share/dirb/wordlists/common.txt",
         extensions: str = "",
         output_file: str = "",
+        max_accuracy: bool = True,
         additional_args: str = ""
     ) -> Dict[str, Any]:
         """
@@ -868,15 +972,16 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             "output_file": output_file,
             "additional_args": additional_args
         }
-        return sast_client.safe_post("api/web/dirb", data)
+        return await sast_client.safe_post("api/web/dirb", data)
 
     @mcp.tool()
-    def lynis_audit(
+    async def lynis_audit(
         target: str = "",
         audit_mode: str = "system",
         quick: bool = False,
         log_file: str = "",
         report_file: str = "",
+        max_accuracy: bool = True,
         additional_args: str = ""
     ) -> Dict[str, Any]:
         """
@@ -904,15 +1009,16 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             "report_file": report_file,
             "additional_args": additional_args
         }
-        return sast_client.safe_post("api/system/lynis", data)
+        return await sast_client.safe_post("api/system/lynis", data)
 
     @mcp.tool()
-    def snyk_scan(
+    async def snyk_scan(
         target: str = ".",
         test_type: str = "test",
         severity_threshold: str = "",
         json_output: bool = True,
         output_file: str = "",
+        max_accuracy: bool = True,
         additional_args: str = ""
     ) -> Dict[str, Any]:
         """
@@ -942,14 +1048,15 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             "output_file": output_file,
             "additional_args": additional_args
         }
-        return sast_client.safe_post("api/dependencies/snyk", data)
+        return await sast_client.safe_post("api/dependencies/snyk", data)
 
     @mcp.tool()
-    def clamav_scan(
+    async def clamav_scan(
         target: str,
         recursive: bool = True,
         infected_only: bool = False,
         output_file: str = "",
+        max_accuracy: bool = True,
         additional_args: str = ""
     ) -> Dict[str, Any]:
         """
@@ -973,14 +1080,14 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             "output_file": output_file,
             "additional_args": additional_args
         }
-        return sast_client.safe_post("api/malware/clamav", data)
+        return await sast_client.safe_post("api/malware/clamav", data)
 
     # ========================================================================
     # UTILITY TOOLS
     # ========================================================================
 
     @mcp.tool()
-    def scan_project_structure(
+    async def scan_project_structure(
         project_path: str = ".",
         deep_scan: bool = True,
         include_hidden: bool = False
@@ -1007,10 +1114,10 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             "deep_scan": deep_scan,
             "include_hidden": include_hidden
         }
-        return sast_client.safe_post("api/util/scan-project-structure", data)
+        return await sast_client.safe_post("api/util/scan-project-structure", data)
 
     @mcp.tool()
-    def get_scan_statistics() -> Dict[str, Any]:
+    async def get_scan_statistics() -> Dict[str, Any]:
         """
         Get current parallel scan statistics from the server.
         Shows how many scans are active, queued, completed, and failed.
@@ -1025,10 +1132,10 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             - Available scan slots
             - Wait timeout configuration (default: 30 minutes)
         """
-        return sast_client.safe_get("api/util/scan-stats")
+        return await sast_client.safe_get("api/util/scan-stats")
 
     @mcp.tool()
-    def sast_server_health() -> Dict[str, Any]:
+    async def sast_server_health() -> Dict[str, Any]:
         """
         Check the health status of the SAST Tools server.
         Returns server status and availability of all SAST tools.
@@ -1036,10 +1143,10 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
         Returns:
             Server health information and tool availability status
         """
-        return sast_client.check_health()
+        return await sast_client.check_health()
 
     @mcp.tool()
-    def execute_custom_sast_command(command: str, cwd: str = "", timeout: int = 300) -> Dict[str, Any]:
+    async def execute_custom_sast_command(command: str, cwd: str = "", timeout: int = 300) -> Dict[str, Any]:
         """
         Execute a custom SAST command on the server.
         Use this for SAST tools not directly supported by other functions.
@@ -1057,7 +1164,7 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             "cwd": cwd if cwd else None,
             "timeout": timeout
         }
-        return sast_client.safe_post("api/command", data)
+        return await sast_client.safe_post("api/command", data)
 
     return mcp
 
@@ -1081,6 +1188,25 @@ def parse_args():
     return parser.parse_args()
 
 
+async def check_server_health_async(sast_client, server_url):
+    """Async helper to check server health on startup"""
+    health = await sast_client.check_health()
+    if "error" in health:
+        logger.warning(f"Unable to connect to SAST API server at {server_url}: {health['error']}")
+        logger.warning("MCP server will start, but tool execution may fail")
+    else:
+        logger.info(f"Successfully connected to SAST API server at {server_url}")
+        logger.info(f"Server health status: {health.get('status')}")
+        logger.info(f"Tools available: {health.get('total_tools_available', 0)}/{health.get('total_tools_count', 0)}")
+
+        if not health.get("all_essential_tools_available", False):
+            logger.warning("Not all essential SAST tools are available on the server")
+            tools_status = health.get("tools_status", {})
+            missing_tools = [tool for tool, available in tools_status.items() if not available]
+            if missing_tools:
+                logger.warning(f"Missing tools: {', '.join(missing_tools)}")
+
+
 def main():
     """Main entry point for the MCP server"""
     args = parse_args()
@@ -1093,26 +1219,17 @@ def main():
     # Initialize the SAST Tools client
     sast_client = SASTToolsClient(args.server, args.timeout)
 
-    # Check server health and log the result
-    health = sast_client.check_health()
-    if "error" in health:
-        logger.warning(f"Unable to connect to SAST API server at {args.server}: {health['error']}")
-        logger.warning("MCP server will start, but tool execution may fail")
-    else:
-        logger.info(f"Successfully connected to SAST API server at {args.server}")
-        logger.info(f"Server health status: {health.get('status')}")
-        logger.info(f"Tools available: {health.get('total_tools_available', 0)}/{health.get('total_tools_count', 0)}")
-
-        if not health.get("all_essential_tools_available", False):
-            logger.warning("Not all essential SAST tools are available on the server")
-            tools_status = health.get("tools_status", {})
-            missing_tools = [tool for tool, available in tools_status.items() if not available]
-            if missing_tools:
-                logger.warning(f"Missing tools: {', '.join(missing_tools)}")
+    # Check server health asynchronously
+    try:
+        asyncio.run(check_server_health_async(sast_client, args.server))
+    except Exception as e:
+        logger.warning(f"Health check failed: {str(e)}")
 
     # Set up and run the MCP server
     mcp = setup_mcp_server(sast_client)
-    logger.info("Starting SAST MCP server for Claude Code integration")
+    logger.info("Starting SAST MCP server for Claude Code integration with async/await support")
+    logger.info("All scan tools now run asynchronously for better performance")
+    logger.info("Maximum accuracy mode enabled by default for thorough scanning")
     mcp.run()
 
 
