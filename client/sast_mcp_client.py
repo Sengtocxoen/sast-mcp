@@ -980,6 +980,54 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
     # ========================================================================
 
     @mcp.tool()
+    def scan_project_structure(
+        project_path: str = ".",
+        deep_scan: bool = True,
+        include_hidden: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Deeply scan project structure to find dependency files and project metadata.
+        This helps improve scan accuracy by identifying all relevant files for security analysis.
+
+        Args:
+            project_path: Path to the project directory to scan (default: current directory)
+            deep_scan: Recursively scan subdirectories (boolean, default: True)
+            include_hidden: Include hidden files and directories (boolean, default: False)
+
+        Returns:
+            Comprehensive project structure information including:
+            - Detected project type(s) (Python, Node.js, Go, Ruby, Java, etc.)
+            - Dependency files (requirements.txt, package.json, go.mod, Gemfile, pom.xml, etc.)
+            - Configuration files (.env, config files, etc.)
+            - Source code directories
+            - Recommended scan targets for each tool
+        """
+        data = {
+            "project_path": project_path,
+            "deep_scan": deep_scan,
+            "include_hidden": include_hidden
+        }
+        return sast_client.safe_post("api/util/scan-project-structure", data)
+
+    @mcp.tool()
+    def get_scan_statistics() -> Dict[str, Any]:
+        """
+        Get current parallel scan statistics from the server.
+        Shows how many scans are active, queued, completed, and failed.
+        Also displays available scan slots.
+
+        Returns:
+            Parallel scan statistics including:
+            - Maximum parallel scans allowed (default: 3)
+            - Active scans currently running
+            - Queued scans waiting for slots
+            - Completed and failed scan counts
+            - Available scan slots
+            - Wait timeout configuration (default: 30 minutes)
+        """
+        return sast_client.safe_get("api/util/scan-stats")
+
+    @mcp.tool()
     def sast_server_health() -> Dict[str, Any]:
         """
         Check the health status of the SAST Tools server.
