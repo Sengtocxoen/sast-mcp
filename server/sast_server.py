@@ -505,9 +505,9 @@ def resolve_windows_path(windows_path: str) -> str:
     Mount mapping: F:/ <-> /mnt/work
 
     Examples:
-        F:/MyProject/file.txt -> /mnt/work/MyProject/file.txt
-        F:\\work\\project\\scan.json -> /mnt/work/work/project/scan.json
-        F:/scan-results.txt -> /mnt/work/scan-results.txt
+        F:/work/MyProject/file.txt -> /mnt/work/MyProject/file.txt
+        F:\\work\\project\\scan.json -> /mnt/work/project/scan.json
+        F:/work/scan-results.txt -> /mnt/work/scan-results.txt
     """
     # Normalize path separators
     normalized_path = windows_path.replace('\\', '/')
@@ -515,14 +515,14 @@ def resolve_windows_path(windows_path: str) -> str:
     logger.info(f"Resolving path: {windows_path} -> normalized: {normalized_path}")
 
     # Try different Windows path patterns
-    # F:/ -> /mnt/work
+    # F:/work -> /mnt/work
     patterns = [
-        (r'^F:/', '/mnt/work/'),       # F:/... -> /mnt/work/...
-        (r'^F:$', '/mnt/work'),        # F: -> /mnt/work
-        (r'^/f/', '/mnt/work/'),       # Git bash: /f/... -> /mnt/work/...
-        (r'^/f$', '/mnt/work'),        # Git bash: /f -> /mnt/work
-        (r'^f:/', '/mnt/work/'),       # Lowercase: f:/... -> /mnt/work/...
-        (r'^f:$', '/mnt/work'),        # Lowercase: f: -> /mnt/work
+        (r'^F:/work/', '/mnt/work/'),       # F:/work/... -> /mnt/work/...
+        (r'^F:/work$', '/mnt/work'),        # F:/work -> /mnt/work
+        (r'^/f:/work/', '/mnt/work/'),       # Git bash: /f:/work/... -> /mnt/work/...
+        (r'^/f:/work$', '/mnt/work'),        # Git bash: /f:/work    -> /mnt/work
+        (r'^f:/work', '/mnt/work/'),       # Lowercase: f:/... -> /mnt/work/...
+        (r'^f:/work$', '/mnt/work'),        # Lowercase: f: -> /mnt/work
     ]
 
     for pattern, replacement in patterns:
