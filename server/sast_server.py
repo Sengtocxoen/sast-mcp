@@ -146,17 +146,20 @@ MAX_WORKERS = int(os.environ.get("MAX_WORKERS", 10))  # Max concurrent scan jobs
 JOB_RETENTION_HOURS = int(os.environ.get("JOB_RETENTION_HOURS", 72))  # Keep job data for 72 hours
 
 # Parallel Scan Configuration
-MAX_PARALLEL_SCANS = int(os.environ.get("MAX_PARALLEL_SCANS", 3))  # Max 3 parallel file scans
+# Changed default from 3 to 1 to ensure scans are queued and processed one at a time
+# This prevents multiple processes from running simultaneously when Claude makes multiple scan requests
+MAX_PARALLEL_SCANS = int(os.environ.get("MAX_PARALLEL_SCANS", 1))  # Serial scan execution (one at a time)
 SCAN_WAIT_TIMEOUT = int(os.environ.get("SCAN_WAIT_TIMEOUT", 1800))  # 30 minutes wait timeout
 
 # Initialize Flask application
 app = Flask(__name__)
 
 # ============================================================================
-# PARALLEL SCAN CONTROL
+# SERIAL SCAN CONTROL (QUEUE SYSTEM)
 # ============================================================================
 
-# Semaphore to limit concurrent scans to MAX_PARALLEL_SCANS (default 3)
+# Semaphore to limit concurrent scans to MAX_PARALLEL_SCANS (default 1 for serial execution)
+# This ensures each scan waits for its turn in the queue
 scan_semaphore = threading.Semaphore(MAX_PARALLEL_SCANS)
 scan_stats_lock = threading.Lock()
 scan_stats = {
