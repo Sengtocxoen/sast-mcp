@@ -64,6 +64,8 @@ import subprocess
 import sys
 import traceback
 import threading
+import multiprocessing
+from multiprocessing import Manager, Process, Queue
 import re
 import uuid
 import time
@@ -73,8 +75,10 @@ from datetime import datetime
 import tempfile
 import shutil
 from enum import Enum
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 from pathlib import Path
+import hashlib
+import psutil
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -145,30 +149,61 @@ DEFAULT_OUTPUT_DIR = os.environ.get("DEFAULT_OUTPUT_DIR", "/var/sast-mcp/scan-re
 MAX_WORKERS = int(os.environ.get("MAX_WORKERS", 10))  # Max concurrent scan jobs
 JOB_RETENTION_HOURS = int(os.environ.get("JOB_RETENTION_HOURS", 72))  # Keep job data for 72 hours
 
-# Parallel Scan Configuration
-# Changed default from 3 to 1 to ensure scans are queued and processed one at a time
-# This prevents multiple processes from running simultaneously when Claude makes multiple scan requests
-MAX_PARALLEL_SCANS = int(os.environ.get("MAX_PARALLEL_SCANS", 1))  # Serial scan execution (one at a time)
+# Multi-Process Scan Configuration
+# Updated to support true parallel execution using multiprocessing
+# Each scan runs in its own isolated process for better CPU utilization and stability
+MAX_PARALLEL_SCANS = int(os.environ.get("MAX_PARALLEL_SCANS", 4))  # Number of concurrent scans (default: 4)
 SCAN_WAIT_TIMEOUT = int(os.environ.get("SCAN_WAIT_TIMEOUT", 1800))  # 30 minutes wait timeout
+USE_MULTIPROCESSING = os.environ.get("USE_MULTIPROCESSING", "1").lower() in ("1", "true", "yes", "y")  # Enable multi-process backend
+
+# Process Management Configuration
+MAX_PROCESS_WORKERS = int(os.environ.get("MAX_PROCESS_WORKERS", max(4, multiprocessing.cpu_count() - 1)))  # Process pool size
+PROCESS_MEMORY_LIMIT_MB = int(os.environ.get("PROCESS_MEMORY_LIMIT_MB", 2048))  # 2GB per process
+MAX_RETRY_ATTEMPTS = int(os.environ.get("MAX_RETRY_ATTEMPTS", 2))  # Retry failed scans
+RETRY_BACKOFF_BASE = float(os.environ.get("RETRY_BACKOFF_BASE", 2.0))  # Exponential backoff multiplier
+
+# Accuracy and Validation Configuration
+ENABLE_RESULT_VALIDATION = os.environ.get("ENABLE_RESULT_VALIDATION", "1").lower() in ("1", "true", "yes", "y")
+ENABLE_CHECKSUM_VERIFICATION = os.environ.get("ENABLE_CHECKSUM_VERIFICATION", "1").lower() in ("1", "true", "yes", "y")
+MIN_RESULT_SIZE_BYTES = int(os.environ.get("MIN_RESULT_SIZE_BYTES", 10))  # Minimum valid result size
 
 # Initialize Flask application
 app = Flask(__name__)
 
 # ============================================================================
-# SERIAL SCAN CONTROL (QUEUE SYSTEM)
+# MULTI-PROCESS SCAN CONTROL (PARALLEL EXECUTION)
 # ============================================================================
 
-# Semaphore to limit concurrent scans to MAX_PARALLEL_SCANS (default 1 for serial execution)
-# This ensures each scan waits for its turn in the queue
-scan_semaphore = threading.Semaphore(MAX_PARALLEL_SCANS)
-scan_stats_lock = threading.Lock()
-scan_stats = {
-    "active_scans": 0,
-    "total_scans": 0,
-    "queued_scans": 0,
-    "completed_scans": 0,
-    "failed_scans": 0
-}
+# Initialize multiprocessing manager for shared state
+mp_manager = Manager() if USE_MULTIPROCESSING else None
+
+# Semaphore to limit concurrent scans to MAX_PARALLEL_SCANS
+# Uses multiprocessing.Semaphore for cross-process synchronization when multiprocessing is enabled
+if USE_MULTIPROCESSING:
+    scan_semaphore = multiprocessing.Semaphore(MAX_PARALLEL_SCANS)
+    scan_stats_lock = multiprocessing.Lock()
+    scan_stats = mp_manager.dict({
+        "active_scans": 0,
+        "total_scans": 0,
+        "queued_scans": 0,
+        "completed_scans": 0,
+        "failed_scans": 0,
+        "retried_scans": 0,
+        "process_crashes": 0
+    })
+else:
+    # Fallback to threading for compatibility
+    scan_semaphore = threading.Semaphore(MAX_PARALLEL_SCANS)
+    scan_stats_lock = threading.Lock()
+    scan_stats = {
+        "active_scans": 0,
+        "total_scans": 0,
+        "queued_scans": 0,
+        "completed_scans": 0,
+        "failed_scans": 0,
+        "retried_scans": 0,
+        "process_crashes": 0
+    }
 
 def acquire_scan_slot(timeout: int = SCAN_WAIT_TIMEOUT) -> bool:
     """
@@ -265,13 +300,19 @@ class Job:
 
 
 class JobManager:
-    """Manages background scan jobs"""
+    """Manages background scan jobs with multi-process support"""
 
     def __init__(self, max_workers: int = MAX_WORKERS):
         self.jobs: Dict[str, Job] = {}
         self.lock = threading.Lock()
-        self.executor = ThreadPoolExecutor(max_workers=max_workers)
-        logger.info(f"JobManager initialized with {max_workers} workers")
+
+        # Use ProcessPoolExecutor for true parallelism when multiprocessing is enabled
+        if USE_MULTIPROCESSING:
+            self.executor = ProcessPoolExecutor(max_workers=MAX_PROCESS_WORKERS)
+            logger.info(f"JobManager initialized with ProcessPoolExecutor ({MAX_PROCESS_WORKERS} process workers, max {MAX_PARALLEL_SCANS} parallel scans)")
+        else:
+            self.executor = ThreadPoolExecutor(max_workers=max_workers)
+            logger.info(f"JobManager initialized with ThreadPoolExecutor ({max_workers} thread workers)")
 
         # Ensure default output directory exists
         os.makedirs(DEFAULT_OUTPUT_DIR, exist_ok=True)
@@ -809,9 +850,370 @@ def execute_command(command: str, cwd: Optional[str] = None, timeout: int = COMM
     return executor.execute()
 
 
+# ============================================================================
+# RESULT VALIDATION AND ACCURACY VERIFICATION
+# ============================================================================
+
+def calculate_checksum(data: str) -> str:
+    """Calculate SHA256 checksum of result data"""
+    return hashlib.sha256(data.encode('utf-8')).hexdigest()
+
+
+def validate_scan_result(result: Dict[str, Any], tool_name: str) -> Dict[str, Any]:
+    """
+    Validate scan results for accuracy and completeness
+
+    Args:
+        result: Raw scan result dictionary
+        tool_name: Name of the security tool
+
+    Returns:
+        Validation report with status and details
+    """
+    validation = {
+        "valid": True,
+        "warnings": [],
+        "errors": [],
+        "checksum": None,
+        "size_bytes": 0
+    }
+
+    if not ENABLE_RESULT_VALIDATION:
+        return validation
+
+    try:
+        # Check if result has required fields
+        if not result.get("success"):
+            validation["warnings"].append("Scan reported non-success status")
+
+        stdout = result.get("stdout", "")
+        stderr = result.get("stderr", "")
+
+        # Calculate checksum for result verification
+        if ENABLE_CHECKSUM_VERIFICATION and stdout:
+            validation["checksum"] = calculate_checksum(stdout)
+
+        # Check minimum result size
+        validation["size_bytes"] = len(stdout) + len(stderr)
+        if validation["size_bytes"] < MIN_RESULT_SIZE_BYTES:
+            validation["warnings"].append(f"Result size ({validation['size_bytes']} bytes) below minimum threshold ({MIN_RESULT_SIZE_BYTES} bytes)")
+
+        # Tool-specific validation
+        if tool_name in ["semgrep", "bandit", "eslint"]:
+            # Check for JSON output
+            if stdout and not (stdout.strip().startswith("{") or stdout.strip().startswith("[")):
+                validation["warnings"].append("Expected JSON output not detected")
+
+        # Check for common error patterns
+        error_patterns = [
+            "command not found",
+            "permission denied",
+            "no such file or directory",
+            "fatal error",
+            "cannot allocate memory"
+        ]
+
+        combined_output = (stdout + stderr).lower()
+        for pattern in error_patterns:
+            if pattern in combined_output:
+                validation["errors"].append(f"Error pattern detected: {pattern}")
+                validation["valid"] = False
+
+        # Check for timeout with no partial results
+        if result.get("timed_out") and not result.get("partial_results"):
+            validation["warnings"].append("Scan timed out with no partial results")
+
+    except Exception as e:
+        validation["errors"].append(f"Validation failed: {str(e)}")
+        validation["valid"] = False
+
+    return validation
+
+
+def check_process_health() -> Dict[str, Any]:
+    """
+    Check process health and resource usage
+
+    Returns:
+        Process health metrics
+    """
+    try:
+        process = psutil.Process()
+
+        # Get memory info
+        memory_info = process.memory_info()
+        memory_mb = memory_info.rss / (1024 * 1024)
+
+        # Get CPU usage
+        cpu_percent = process.cpu_percent(interval=0.1)
+
+        # Check if approaching memory limit
+        memory_warning = memory_mb > (PROCESS_MEMORY_LIMIT_MB * 0.9)
+
+        return {
+            "healthy": not memory_warning,
+            "memory_mb": round(memory_mb, 2),
+            "memory_limit_mb": PROCESS_MEMORY_LIMIT_MB,
+            "memory_percent": round((memory_mb / PROCESS_MEMORY_LIMIT_MB) * 100, 2),
+            "cpu_percent": round(cpu_percent, 2),
+            "num_threads": process.num_threads(),
+            "warnings": ["Memory usage above 90% threshold"] if memory_warning else []
+        }
+    except Exception as e:
+        logger.error(f"Error checking process health: {e}")
+        return {
+            "healthy": False,
+            "error": str(e)
+        }
+
+
+def retry_with_backoff(func, max_attempts: int = MAX_RETRY_ATTEMPTS, *args, **kwargs) -> Dict[str, Any]:
+    """
+    Retry a function with exponential backoff
+
+    Args:
+        func: Function to retry
+        max_attempts: Maximum retry attempts
+        *args, **kwargs: Arguments to pass to the function
+
+    Returns:
+        Function result or error dict
+    """
+    global scan_stats
+
+    last_error = None
+
+    for attempt in range(max_attempts):
+        try:
+            result = func(*args, **kwargs)
+
+            # Validate result
+            tool_name = kwargs.get("tool_name", "unknown") if kwargs else "unknown"
+            validation = validate_scan_result(result, tool_name)
+
+            # If result is valid or this is the last attempt, return it
+            if validation["valid"] or attempt == max_attempts - 1:
+                result["validation"] = validation
+                result["retry_attempt"] = attempt + 1
+
+                if attempt > 0:
+                    with scan_stats_lock:
+                        scan_stats["retried_scans"] = scan_stats.get("retried_scans", 0) + 1
+                    logger.info(f"Scan succeeded on retry attempt {attempt + 1}/{max_attempts}")
+
+                return result
+
+            # Result invalid, retry
+            logger.warning(f"Scan result validation failed on attempt {attempt + 1}/{max_attempts}: {validation['errors']}")
+            last_error = validation["errors"]
+
+            # Calculate backoff delay
+            if attempt < max_attempts - 1:
+                delay = RETRY_BACKOFF_BASE ** attempt
+                logger.info(f"Retrying after {delay}s backoff...")
+                time.sleep(delay)
+
+        except Exception as e:
+            last_error = str(e)
+            logger.error(f"Scan failed on attempt {attempt + 1}/{max_attempts}: {e}")
+
+            if attempt < max_attempts - 1:
+                delay = RETRY_BACKOFF_BASE ** attempt
+                logger.info(f"Retrying after {delay}s backoff...")
+                time.sleep(delay)
+
+    # All attempts failed
+    return {
+        "success": False,
+        "stdout": "",
+        "stderr": f"All {max_attempts} retry attempts failed. Last error: {last_error}",
+        "return_code": -1,
+        "error": last_error,
+        "retry_attempt": max_attempts
+    }
+
+
+# ============================================================================
+# ERROR CATEGORIZATION AND ENHANCED REPORTING
+# ============================================================================
+
+class ErrorCategory(Enum):
+    """Error category classification"""
+    TOOL_NOT_FOUND = "tool_not_found"
+    PERMISSION_DENIED = "permission_denied"
+    TIMEOUT = "timeout"
+    NETWORK_ERROR = "network_error"
+    RESOURCE_LIMIT = "resource_limit"
+    INVALID_INPUT = "invalid_input"
+    TOOL_ERROR = "tool_error"
+    PROCESS_CRASH = "process_crash"
+    UNKNOWN = "unknown"
+
+
+def categorize_error(result: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Categorize errors for better debugging and remediation
+
+    Args:
+        result: Scan result dictionary
+
+    Returns:
+        Error categorization report
+    """
+    error_info = {
+        "category": ErrorCategory.UNKNOWN.value,
+        "severity": "medium",
+        "remediation_hint": "Check logs for more details",
+        "retryable": True
+    }
+
+    if result.get("success"):
+        error_info["category"] = None
+        error_info["severity"] = None
+        error_info["remediation_hint"] = None
+        error_info["retryable"] = False
+        return error_info
+
+    stderr = result.get("stderr", "").lower()
+    stdout = result.get("stdout", "").lower()
+    combined = stderr + stdout
+
+    # Categorize based on error patterns
+    if "command not found" in combined or "not found" in combined:
+        error_info.update({
+            "category": ErrorCategory.TOOL_NOT_FOUND.value,
+            "severity": "high",
+            "remediation_hint": "Install the required security tool or check PATH environment variable",
+            "retryable": False
+        })
+
+    elif "permission denied" in combined or "access denied" in combined:
+        error_info.update({
+            "category": ErrorCategory.PERMISSION_DENIED.value,
+            "severity": "high",
+            "remediation_hint": "Check file/directory permissions or run with appropriate privileges",
+            "retryable": False
+        })
+
+    elif result.get("timed_out") or "timeout" in combined:
+        error_info.update({
+            "category": ErrorCategory.TIMEOUT.value,
+            "severity": "medium",
+            "remediation_hint": "Increase timeout value or reduce scan scope",
+            "retryable": True
+        })
+
+    elif "connection refused" in combined or "network" in combined or "dns" in combined:
+        error_info.update({
+            "category": ErrorCategory.NETWORK_ERROR.value,
+            "severity": "medium",
+            "remediation_hint": "Check network connectivity and firewall settings",
+            "retryable": True
+        })
+
+    elif "memory" in combined or "resource" in combined or "too many" in combined:
+        error_info.update({
+            "category": ErrorCategory.RESOURCE_LIMIT.value,
+            "severity": "high",
+            "remediation_hint": "Increase memory/resource limits or reduce scan scope",
+            "retryable": True
+        })
+
+    elif "invalid" in combined or "syntax error" in combined or "bad argument" in combined:
+        error_info.update({
+            "category": ErrorCategory.INVALID_INPUT.value,
+            "severity": "high",
+            "remediation_hint": "Check input parameters and file paths",
+            "retryable": False
+        })
+
+    elif result.get("return_code") == -1 or "crash" in combined or "segmentation fault" in combined:
+        error_info.update({
+            "category": ErrorCategory.PROCESS_CRASH.value,
+            "severity": "critical",
+            "remediation_hint": "Tool crashed - check tool version and report issue",
+            "retryable": True
+        })
+
+    elif result.get("return_code", 0) != 0:
+        error_info.update({
+            "category": ErrorCategory.TOOL_ERROR.value,
+            "severity": "medium",
+            "remediation_hint": "Tool reported error - check tool logs and documentation",
+            "retryable": True
+        })
+
+    return error_info
+
+
+def enhance_result_with_metadata(result: Dict[str, Any], tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Enhance scan result with additional metadata for better analysis
+
+    Args:
+        result: Raw scan result
+        tool_name: Name of the tool
+        params: Scan parameters
+
+    Returns:
+        Enhanced result with metadata
+    """
+    enhanced = result.copy()
+
+    # Add error categorization
+    enhanced["error_info"] = categorize_error(result)
+
+    # Add result validation
+    if not result.get("validation"):
+        enhanced["validation"] = validate_scan_result(result, tool_name)
+
+    # Add process health at time of scan
+    enhanced["process_health"] = check_process_health()
+
+    # Add execution metadata
+    enhanced["metadata"] = {
+        "tool_name": tool_name,
+        "scan_params": params,
+        "timestamp": datetime.now().isoformat(),
+        "multiprocessing_enabled": USE_MULTIPROCESSING,
+        "max_parallel_scans": MAX_PARALLEL_SCANS,
+        "retry_enabled": MAX_RETRY_ATTEMPTS > 1
+    }
+
+    return enhanced
+
+
+def execute_scan_with_retry(scan_function, params: Dict[str, Any], tool_name: str) -> Dict[str, Any]:
+    """
+    Execute a scan with retry logic and enhanced error handling
+
+    Args:
+        scan_function: The scan function to execute
+        params: Scan parameters
+        tool_name: Name of the tool
+
+    Returns:
+        Enhanced scan result with validation and error categorization
+    """
+    # Wrap the scan function for retry logic
+    def wrapped_scan():
+        return scan_function(params)
+
+    # Execute with retry if enabled
+    if MAX_RETRY_ATTEMPTS > 1:
+        result = retry_with_backoff(wrapped_scan, max_attempts=MAX_RETRY_ATTEMPTS, tool_name=tool_name)
+    else:
+        result = wrapped_scan()
+
+    # Enhance result with metadata and error categorization
+    enhanced_result = enhance_result_with_metadata(result, tool_name, params)
+
+    return enhanced_result
+
+
 def run_scan_in_background(tool_name: str, params: Dict[str, Any], scan_function) -> Dict[str, Any]:
     """
-    Helper function to run any scan in the background
+    Helper function to run any scan in the background with enhanced multi-process support
 
     Args:
         tool_name: Name of the tool (e.g., 'semgrep', 'bandit')
@@ -828,17 +1230,20 @@ def run_scan_in_background(tool_name: str, params: Dict[str, Any], scan_function
         # Create job
         job = job_manager.create_job(tool_name, params, output_file)
 
-        # Submit job for background execution
-        job_manager.submit_job(job, scan_function, params)
+        # Submit job for background execution with enhanced error handling
+        # The execute_scan_with_retry wrapper will handle retries and error categorization
+        job_manager.submit_job(job, execute_scan_with_retry, scan_function, params, tool_name)
 
         return {
             "success": True,
-            "message": f"Scan job submitted successfully",
+            "message": f"Scan job submitted successfully (multi-process mode: {USE_MULTIPROCESSING})",
             "job_id": job.job_id,
             "job_status": job.status.value,
             "output_file": job.output_file,
             "check_status_url": f"/api/jobs/{job.job_id}",
-            "get_result_url": f"/api/jobs/{job.job_id}/result"
+            "get_result_url": f"/api/jobs/{job.job_id}/result",
+            "multiprocessing_enabled": USE_MULTIPROCESSING,
+            "max_retry_attempts": MAX_RETRY_ATTEMPTS
         }
 
     except Exception as e:
@@ -2636,6 +3041,78 @@ def cleanup_jobs():
         return jsonify({"error": f"Server error: {str(e)}"}), 500
 
 
+@app.route("/api/scan/statistics", methods=["GET"])
+def get_scan_statistics():
+    """
+    Get detailed scan statistics and system health
+
+    Returns comprehensive statistics about scan execution, process health,
+    and multi-process backend performance
+    """
+    try:
+        # Get scan statistics
+        with scan_stats_lock:
+            scan_statistics = dict(scan_stats)
+
+        # Get process health
+        process_health = check_process_health()
+
+        # Calculate additional metrics
+        total_scans = scan_statistics.get("total_scans", 0)
+        completed_scans = scan_statistics.get("completed_scans", 0)
+        failed_scans = scan_statistics.get("failed_scans", 0)
+        retried_scans = scan_statistics.get("retried_scans", 0)
+
+        success_rate = (completed_scans / total_scans * 100) if total_scans > 0 else 0
+        retry_rate = (retried_scans / total_scans * 100) if total_scans > 0 else 0
+        failure_rate = (failed_scans / total_scans * 100) if total_scans > 0 else 0
+
+        # Get job statistics from job manager
+        all_jobs = job_manager.list_jobs(limit=1000)
+        jobs_by_status = {}
+        for job in all_jobs:
+            status = job.status.value
+            jobs_by_status[status] = jobs_by_status.get(status, 0) + 1
+
+        # System resource usage
+        try:
+            cpu_count = multiprocessing.cpu_count()
+            system_memory = psutil.virtual_memory()
+        except:
+            cpu_count = "N/A"
+            system_memory = None
+
+        return jsonify({
+            "success": True,
+            "scan_statistics": scan_statistics,
+            "metrics": {
+                "success_rate_percent": round(success_rate, 2),
+                "retry_rate_percent": round(retry_rate, 2),
+                "failure_rate_percent": round(failure_rate, 2)
+            },
+            "job_statistics": {
+                "total_jobs": len(all_jobs),
+                "jobs_by_status": jobs_by_status
+            },
+            "process_health": process_health,
+            "system_info": {
+                "multiprocessing_enabled": USE_MULTIPROCESSING,
+                "max_parallel_scans": MAX_PARALLEL_SCANS,
+                "max_process_workers": MAX_PROCESS_WORKERS if USE_MULTIPROCESSING else "N/A",
+                "max_retry_attempts": MAX_RETRY_ATTEMPTS,
+                "cpu_count": cpu_count,
+                "system_memory_total_gb": round(system_memory.total / (1024**3), 2) if system_memory else "N/A",
+                "system_memory_available_gb": round(system_memory.available / (1024**3), 2) if system_memory else "N/A",
+                "system_memory_percent": system_memory.percent if system_memory else "N/A"
+            },
+            "timestamp": datetime.now().isoformat()
+        })
+
+    except Exception as e:
+        logger.error(f"Error getting scan statistics: {str(e)}")
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+
 # ============================================================================
 # AI ANALYSIS ENDPOINTS (Future Feature)
 # ============================================================================
@@ -2843,6 +3320,13 @@ def health_check():
     total_count = len(tools_status)
     kali_tools_count = sum(1 for tool in kali_tools.keys() if tools_status.get(tool, False))
 
+    # Get process health metrics
+    process_health = check_process_health()
+
+    # Get scan statistics
+    with scan_stats_lock:
+        scan_statistics = dict(scan_stats)
+
     return jsonify({
         "status": "healthy",
         "message": "SAST Tools API Server is running",
@@ -2852,7 +3336,12 @@ def health_check():
         "total_tools_count": total_count,
         "kali_tools_available": kali_tools_count,
         "kali_tools_total": len(kali_tools),
-        "version": "2.0.0"
+        "process_health": process_health,
+        "scan_statistics": scan_statistics,
+        "multiprocessing_enabled": USE_MULTIPROCESSING,
+        "max_parallel_scans": MAX_PARALLEL_SCANS,
+        "max_process_workers": MAX_PROCESS_WORKERS if USE_MULTIPROCESSING else "N/A",
+        "version": "3.0.0"
     })
 
 
