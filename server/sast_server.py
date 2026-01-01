@@ -544,11 +544,10 @@ job_manager = JobManager(max_workers=MAX_WORKERS)
 
 def resolve_windows_path(windows_path: str) -> str:
     """
-    Convert Windows path to Linux mount path
+    Convert Windows path to Linux mount path using configured WINDOWS_BASE and MOUNT_POINT
 
-    Mount mapping: F:/ <-> /mnt/work
-
-    Examples:
+    Mount mapping: WINDOWS_BASE <-> MOUNT_POINT
+    Example (with WINDOWS_BASE=F:/work and MOUNT_POINT=/mnt/work):
         F:/work/MyProject/file.txt -> /mnt/work/MyProject/file.txt
         F:\\work\\project\\scan.json -> /mnt/work/project/scan.json
         F:/work/scan-results.txt -> /mnt/work/scan-results.txt
@@ -557,16 +556,21 @@ def resolve_windows_path(windows_path: str) -> str:
     normalized_path = windows_path.replace('\\', '/')
 
     logger.info(f"Resolving path: {windows_path} -> normalized: {normalized_path}")
+    logger.info(f"Using mapping: {WINDOWS_BASE} -> {MOUNT_POINT}")
 
-    # Try different Windows path patterns
-    # F:/work -> /mnt/work
+    # Normalize WINDOWS_BASE for comparison (remove trailing slash for consistency)
+    windows_base_normalized = WINDOWS_BASE.replace('\\', '/').rstrip('/')
+    mount_point_normalized = MOUNT_POINT.rstrip('/')
+
+    # Build dynamic patterns based on environment variables
+    # Support various formats: F:/work, f:/work, /f:/work (Git Bash)
     patterns = [
-        (r'^F:/work/', '/mnt/work/'),       # F:/work/... -> /mnt/work/...
-        (r'^F:/work$', '/mnt/work'),        # F:/work -> /mnt/work
-        (r'^/f:/work/', '/mnt/work/'),       # Git bash: /f:/work/... -> /mnt/work/...
-        (r'^/f:/work$', '/mnt/work'),        # Git bash: /f:/work    -> /mnt/work
-        (r'^f:/work', '/mnt/work/'),       # Lowercase: f:/... -> /mnt/work/...
-        (r'^f:/work$', '/mnt/work'),        # Lowercase: f: -> /mnt/work
+        (rf'^{re.escape(windows_base_normalized)}/', f'{mount_point_normalized}/'),  # F:/work/... -> /mnt/work/...
+        (rf'^{re.escape(windows_base_normalized)}$', mount_point_normalized),        # F:/work -> /mnt/work
+        (rf'^/{re.escape(windows_base_normalized.lower())}/', f'{mount_point_normalized}/'),  # Git bash: /f:/work/... -> /mnt/work/...
+        (rf'^/{re.escape(windows_base_normalized.lower())}$', mount_point_normalized),        # Git bash: /f:/work -> /mnt/work
+        (rf'^{re.escape(windows_base_normalized.lower())}/', f'{mount_point_normalized}/'),   # Lowercase: f:/work/... -> /mnt/work/...
+        (rf'^{re.escape(windows_base_normalized.lower())}$', mount_point_normalized),         # Lowercase: f:/work -> /mnt/work
     ]
 
     for pattern, replacement in patterns:
@@ -586,8 +590,8 @@ def resolve_windows_path(windows_path: str) -> str:
                 # Return it anyway, let the tool fail with proper error
                 return linux_path
 
-    # If path is already a valid Linux path starting with /mnt/work, return as-is
-    if normalized_path.startswith('/mnt/work'):
+    # If path is already a valid Linux path starting with mount point, return as-is
+    if normalized_path.startswith(mount_point_normalized):
         logger.info(f"✓ Path already valid Linux path: {normalized_path}")
         return normalized_path
 
