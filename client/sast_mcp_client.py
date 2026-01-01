@@ -1219,11 +1219,10 @@ def main():
     # Initialize the SAST Tools client
     sast_client = SASTToolsClient(args.server, args.timeout)
 
-    # Check server health asynchronously
-    try:
-        asyncio.run(check_server_health_async(sast_client, args.server))
-    except Exception as e:
-        logger.warning(f"Health check failed: {str(e)}")
+    # Skip initial health check to avoid closing the event loop
+    # The health check will happen on first tool use instead
+    logger.info(f"SAST Tools Client initialized for server: {args.server}")
+    logger.info("Health check will be performed on first tool use")
 
     # Set up and run the MCP server
     mcp = setup_mcp_server(sast_client)
