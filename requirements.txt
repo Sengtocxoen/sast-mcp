@@ -26,6 +26,9 @@ python-dotenv>=1.0.0
 # TOON Format Converter (for LLM-optimized output)
 python-toon>=0.1.0
 
+# Process and System Monitoring (for multi-process backend)
+psutil>=5.9.0
+
 # ============================================================================
 # Optional: Python-based SAST Tools
 # ============================================================================
