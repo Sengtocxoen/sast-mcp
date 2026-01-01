@@ -2124,6 +2124,53 @@ def trivy():
 # ADDITIONAL KALI LINUX SECURITY TOOLS
 # ============================================================================
 
+def _nikto_scan(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Internal function to execute nikto scan"""
+    target = params.get("target", "")
+    port = params.get("port", "80")
+    ssl = params.get("ssl", False)
+    output_format = params.get("output_format", "txt")
+    output_file = params.get("output_file", "")
+    additional_args = params.get("additional_args", "")
+
+    if not target:
+        return {"error": "Target parameter is required", "success": False}
+
+    # Resolve output file path if specified
+    resolved_output_file = ""
+    if output_file:
+        resolved_output_file = resolve_windows_path(output_file)
+
+    command = f"nikto -h {target} -p {port}"
+
+    if ssl:
+        command += " -ssl"
+
+    if resolved_output_file:
+        command += f" -Format {output_format} -output {resolved_output_file}"
+
+    if additional_args:
+        command += f" {additional_args}"
+
+    result = execute_command(command, timeout=NIKTO_TIMEOUT)
+
+    # Add path info
+    if output_file:
+        result["output_file_original"] = output_file
+        result["output_file_resolved"] = resolved_output_file
+
+    # Read output file if specified
+    if resolved_output_file and os.path.exists(resolved_output_file):
+        try:
+            with open(resolved_output_file, 'r') as f:
+                result["file_content"] = f.read()
+        except Exception as e:
+            logger.warning(f"Error reading output file: {e}")
+
+    result["summary"] = {"target": target, "port": port}
+    return result
+
+
 @app.route("/api/web/nikto", methods=["POST"])
 def nikto():
     """
@@ -2136,51 +2183,22 @@ def nikto():
     - output_format: Output format (txt, html, csv, xml)
     - output_file: Path to save output file
     - additional_args: Additional Nikto arguments
+    - background: Run in background (default: True)
     """
     try:
         params = request.json
-        target = params.get("target", "")
-        port = params.get("port", "80")
-        ssl = params.get("ssl", False)
-        output_format = params.get("output_format", "txt")
-        output_file = params.get("output_file", "")
-        additional_args = params.get("additional_args", "")
+        background = params.get("background", True)
 
-        if not target:
-            return jsonify({"error": "Target parameter is required"}), 400
+        # Run in background by default
+        if background:
+            result = run_scan_in_background("nikto", params, _nikto_scan)
+            return jsonify(result)
 
-        # Resolve output file path if specified
-        resolved_output_file = ""
-        if output_file:
-            resolved_output_file = resolve_windows_path(output_file)
+        # Legacy synchronous mode
+        else:
+            result = _nikto_scan(params)
+            return jsonify(result)
 
-        command = f"nikto -h {target} -p {port}"
-
-        if ssl:
-            command += " -ssl"
-
-        if resolved_output_file:
-            command += f" -Format {output_format} -output {resolved_output_file}"
-
-        if additional_args:
-            command += f" {additional_args}"
-
-        result = execute_command(command, timeout=NIKTO_TIMEOUT)
-
-        # Add path info
-        if output_file:
-            result["output_file_original"] = output_file
-            result["output_file_resolved"] = resolved_output_file
-
-        # Read output file if specified
-        if resolved_output_file and os.path.exists(resolved_output_file):
-            try:
-                with open(resolved_output_file, 'r') as f:
-                    result["file_content"] = f.read()
-            except Exception as e:
-                logger.warning(f"Error reading output file: {e}")
-
-        return jsonify(result)
     except Exception as e:
         logger.error(f"Error in nikto endpoint: {str(e)}")
         logger.error(traceback.format_exc())
@@ -3252,6 +3270,95 @@ def toon_status():
     except Exception as e:
         logger.error(f"Error in toon-status endpoint: {str(e)}")
         return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+
+@app.route("/api/jobs/<job_id>/check", methods=["GET"])
+def check_job_result_file(job_id: str):
+    """
+    Simple endpoint to check if a job result file exists
+    Returns ok/not ok based on file existence
+    """
+    try:
+        job = job_manager.get_job(job_id)
+
+        if not job:
+            return jsonify({
+                "status": "not_ok",
+                "exists": False,
+                "message": "Job not found"
+            })
+
+        # Check job status
+        if job.status == JobStatus.PENDING:
+            return jsonify({
+                "status": "not_ok",
+                "exists": False,
+                "job_status": "pending",
+                "message": "Job is pending"
+            })
+
+        if job.status == JobStatus.RUNNING:
+            return jsonify({
+                "status": "not_ok",
+                "exists": False,
+                "job_status": "running",
+                "message": "Job is still running"
+            })
+
+        if job.status == JobStatus.FAILED:
+            return jsonify({
+                "status": "not_ok",
+                "exists": False,
+                "job_status": "failed",
+                "message": "Job failed",
+                "error": job.error
+            })
+
+        if job.status == JobStatus.CANCELLED:
+            return jsonify({
+                "status": "not_ok",
+                "exists": False,
+                "job_status": "cancelled",
+                "message": "Job was cancelled"
+            })
+
+        # Job is completed - check if result file exists
+        if job.output_file:
+            resolved_output_file = resolve_windows_path(job.output_file) if job.output_file.startswith('F:') else job.output_file
+            file_exists = os.path.exists(resolved_output_file)
+
+            if file_exists:
+                file_size = os.path.getsize(resolved_output_file)
+                return jsonify({
+                    "status": "ok",
+                    "exists": True,
+                    "job_status": "completed",
+                    "output_file": job.output_file,
+                    "file_size_bytes": file_size,
+                    "message": "Result file exists"
+                })
+            else:
+                return jsonify({
+                    "status": "not_ok",
+                    "exists": False,
+                    "job_status": "completed",
+                    "message": "Job completed but result file not found"
+                })
+        else:
+            return jsonify({
+                "status": "not_ok",
+                "exists": False,
+                "job_status": "completed",
+                "message": "Job completed but no output file specified"
+            })
+
+    except Exception as e:
+        logger.error(f"Error checking job result file: {str(e)}")
+        return jsonify({
+            "status": "not_ok",
+            "exists": False,
+            "error": str(e)
+        }), 500
 
 
 @app.route("/health", methods=["GET"])
