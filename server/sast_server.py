@@ -421,6 +421,14 @@ class JobManager:
     def _save_job_result(self, job: Job, result: Dict[str, Any]):
         """Save job result to output file (JSON and TOON formats)"""
         try:
+            # Check if using native tool output mode
+            use_native_output = job.params.get("use_native_output", False)
+
+            # If native output mode and tool wrote directly to file, skip all formatting
+            if use_native_output and result.get("native_output_written", False):
+                logger.info(f"Job {job.job_id} used native tool output - skipping AI-specific formatting")
+                return
+
             # Resolve Windows path if needed
             resolved_output_file = resolve_windows_path(job.output_file) if job.output_file.startswith('F:') else job.output_file
 
@@ -444,8 +452,8 @@ class JobManager:
             file_size = os.path.getsize(resolved_output_file)
             logger.info(f"Saved job {job.job_id} result to {resolved_output_file} ({file_size} bytes)")
 
-            # Convert to TOON format and save to temp file
-            if is_toon_available():
+            # Only generate TOON and AI-payload if explicitly enabled or if native output is not used
+            if not use_native_output and is_toon_available():
                 try:
                     logger.info(f"Converting scan result to TOON format for job {job.job_id}")
                     toon_output = convert_scan_result_to_toon(full_result)
@@ -496,7 +504,10 @@ class JobManager:
                     logger.error(traceback.format_exc())
                     # Don't raise - TOON conversion failure shouldn't fail the job
             else:
-                logger.info("TOON converter not available, skipping TOON format generation")
+                if use_native_output:
+                    logger.info("Native output mode enabled - skipping TOON format generation")
+                else:
+                    logger.info("TOON converter not available, skipping TOON format generation")
 
         except Exception as e:
             logger.error(f"Error saving job result: {str(e)}")
@@ -1268,9 +1279,16 @@ def _semgrep_scan(params: Dict[str, Any]) -> Dict[str, Any]:
     severity = params.get("severity", "")
     output_format = params.get("output_format", "json")
     additional_args = params.get("additional_args", "")
+    output_file = params.get("output_file", "")
+    use_native_output = params.get("use_native_output", False)
 
     # Resolve Windows path to Linux mount path
     resolved_target = resolve_windows_path(target)
+
+    # Resolve output file path if provided
+    resolved_output_file = ""
+    if output_file:
+        resolved_output_file = resolve_windows_path(output_file) if output_file.startswith('F:') else output_file
 
     command = f"semgrep --config={config}"
 
@@ -1281,6 +1299,12 @@ def _semgrep_scan(params: Dict[str, Any]) -> Dict[str, Any]:
         command += f" --severity={severity}"
 
     command += f" --{output_format}"
+
+    # If using native output and output_file is provided, use semgrep's -o flag
+    if use_native_output and resolved_output_file:
+        # Ensure output directory exists
+        os.makedirs(os.path.dirname(resolved_output_file), exist_ok=True)
+        command += f" -o {resolved_output_file}"
 
     if additional_args:
         command += f" {additional_args}"
@@ -1293,9 +1317,17 @@ def _semgrep_scan(params: Dict[str, Any]) -> Dict[str, Any]:
     result["original_path"] = target
     result["resolved_path"] = resolved_target
 
-    # Try to parse JSON output for summary
+    # Mark that native output was written
+    if use_native_output and resolved_output_file:
+        result["native_output_written"] = True
+        result["native_output_file"] = resolved_output_file
+        logger.info(f"Semgrep output written directly to {resolved_output_file}")
+    else:
+        result["native_output_written"] = False
+
+    # Try to parse JSON output for summary (only if not using native output)
     summary = {}
-    if output_format == "json" and result["stdout"]:
+    if not use_native_output and output_format == "json" and result["stdout"]:
         try:
             parsed = json.loads(result["stdout"])
             result["parsed_output"] = parsed
@@ -1322,6 +1354,7 @@ def semgrep():
     - severity: Filter by severity (ERROR, WARNING, INFO)
     - output_format: json, sarif, text, gitlab-sast
     - output_file: Path to save results (Windows format: F:/path/file.json)
+    - use_native_output: If True, tool writes directly to output_file (no TOON/AI-payload)
     - additional_args: Additional Semgrep arguments
     - background: Run in background (default: True)
     """

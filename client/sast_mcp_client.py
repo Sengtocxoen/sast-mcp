@@ -194,6 +194,7 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
         severity: str = "",
         output_format: str = "json",
         output_file: str = "",
+        use_native_output: bool = True,
         max_accuracy: bool = True,
         additional_args: str = ""
     ) -> Dict[str, Any]:
@@ -218,14 +219,17 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             severity: Filter by severity level (ERROR, WARNING, INFO)
             output_format: Output format (json, sarif, text, gitlab-sast)
             output_file: Path to save scan results (Windows format: F:/path/to/file.json).
-                        If provided, full results are saved to file and only summary is returned
-                        to avoid token limits.
+                        When use_native_output=True, tool writes directly to this file in its native format.
+            use_native_output: If True (default), tool outputs directly to file without AI-specific
+                             formatting (no TOON conversion, no metadata wrapper). Recommended for
+                             normal usage. Set to False only if you need AI-optimized output formats.
             max_accuracy: Enable maximum accuracy mode - slower but more thorough (default: True)
             additional_args: Additional Semgrep command-line arguments
 
         Returns:
             Scan results with identified security issues and code quality problems.
-            If output_file is provided, returns summary with file location instead of full results.
+            When use_native_output=True, the tool writes directly to output_file and returns
+            execution status only.
         """
         # Add comprehensive scanning flags for maximum accuracy
         accuracy_flags = ""
@@ -241,6 +245,7 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             "severity": severity,
             "output_format": output_format,
             "output_file": output_file,
+            "use_native_output": use_native_output,
             "additional_args": combined_args
         }
         return await sast_client.safe_post("api/sast/semgrep", data)
