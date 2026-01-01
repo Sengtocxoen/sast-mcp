@@ -139,6 +139,15 @@ class SASTToolsClient:
         """
         url = f"{self.server_url}/{endpoint}"
 
+        # Force background mode for all scan endpoints to avoid token limit issues
+        # This ensures scans run in background and return simple job_id instead of full results
+        if any(pattern in endpoint for pattern in ['api/sast/', 'api/secrets/', 'api/dependencies/',
+                                                      'api/iac/', 'api/container/', 'api/web/',
+                                                      'api/network/', 'api/system/', 'api/malware/']):
+            if "background" not in json_data:
+                json_data["background"] = True
+                logger.info(f"Background mode enabled for {endpoint} to reduce token consumption")
+
         try:
             logger.debug(f"POST {url} with data: {json_data}")
             session = await self._get_session()
@@ -1144,6 +1153,68 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             Server health information and tool availability status
         """
         return await sast_client.check_health()
+
+    @mcp.tool()
+    async def check_scan_result(job_id: str) -> Dict[str, Any]:
+        """
+        Check if a scan result file exists for a given job ID.
+        Returns simple ok/not ok status based on file existence.
+
+        This is useful for background scans to verify completion without
+        consuming tokens by fetching full results.
+
+        Args:
+            job_id: Job ID returned from a background scan request
+
+        Returns:
+            Simple status dictionary with:
+            - status: "ok" if result file exists, "not_ok" otherwise
+            - exists: Boolean indicating file existence
+            - job_status: Current job status (pending, running, completed, failed, cancelled)
+            - message: Human-readable status message
+        """
+        return await sast_client.safe_get(f"api/jobs/{job_id}/check")
+
+    @mcp.tool()
+    async def get_job_status(job_id: str) -> Dict[str, Any]:
+        """
+        Get the status of a background scan job.
+
+        Args:
+            job_id: Job ID returned from a background scan request
+
+        Returns:
+            Job status information including:
+            - job_id: The job identifier
+            - tool_name: Name of the scan tool
+            - status: Job status (pending, running, completed, failed, cancelled)
+            - created_at: Job creation timestamp
+            - started_at: Job start timestamp (if started)
+            - completed_at: Job completion timestamp (if completed)
+            - output_file: Path to result file
+            - progress: Job progress percentage
+        """
+        return await sast_client.safe_get(f"api/jobs/{job_id}")
+
+    @mcp.tool()
+    async def list_scan_jobs(
+        status_filter: str = "",
+        limit: int = 100
+    ) -> Dict[str, Any]:
+        """
+        List background scan jobs with optional filtering.
+
+        Args:
+            status_filter: Filter by status (pending, running, completed, failed, cancelled)
+            limit: Maximum number of jobs to return (default: 100)
+
+        Returns:
+            List of jobs with their status information
+        """
+        endpoint = f"api/jobs?limit={limit}"
+        if status_filter:
+            endpoint += f"&status={status_filter}"
+        return await sast_client.safe_get(endpoint)
 
     @mcp.tool()
     async def execute_custom_sast_command(command: str, cwd: str = "", timeout: int = 300) -> Dict[str, Any]:
