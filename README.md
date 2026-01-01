@@ -714,6 +714,79 @@ You can specify a custom output file for any scan:
 
 If not specified, files are automatically named: `{tool}_{timestamp}_{job_id}.json`
 
+### Native Output Mode
+
+**NEW:** By default, tools now write directly to output files in their native format, just like running them from the command line. This is the recommended mode for normal usage.
+
+#### How It Works
+
+When `use_native_output=True` (the default):
+- **Tools output directly** to the file you specify using their native output flags (e.g., `semgrep -o file.json`)
+- **No AI-specific formatting** - results are in the tool's standard format
+- **No metadata wrapper** - just the raw tool output
+- **No TOON conversion** - skips AI-optimized format generation
+- **No extra files** - only creates the file you requested
+
+#### Usage Examples
+
+**Example 1: Semgrep scan with native output (default)**
+```
+@sast_tools
+
+Run a Semgrep security audit on F:/work/MyProject and save results to F:/scans/semgrep-results.json
+```
+
+The tool will write directly to `F:/scans/semgrep-results.json` in standard Semgrep JSON format.
+
+**Example 2: Using different output formats**
+```python
+# Via MCP client
+await semgrep_scan(
+    target="F:/work/MyProject",
+    output_file="F:/scans/results.sarif",
+    output_format="sarif",
+    use_native_output=True  # Default
+)
+```
+
+**Example 3: Disable native output for AI analysis (legacy mode)**
+```python
+# Generate TOON and AI-payload files for LLM analysis
+await semgrep_scan(
+    target="F:/work/MyProject",
+    output_file="F:/scans/results.json",
+    use_native_output=False  # Enables TOON conversion
+)
+```
+
+This creates three files:
+- `results.json` - Full results with metadata wrapper
+- `results.toon` - Token-optimized format (30-60% smaller)
+- `results.ai-payload.json` - AI-ready payload for future LLM analysis
+
+#### When to Use Each Mode
+
+**Use Native Output (`use_native_output=True`)** - Recommended
+- Normal security scanning workflows
+- When you want standard tool output format
+- For CI/CD pipelines and automation
+- When integrating with other tools
+- To avoid unnecessary file creation
+
+**Use AI-Optimized Mode (`use_native_output=False`)**
+- When you need TOON format for AI analysis
+- For future LLM-powered scan summarization
+- When you need the metadata wrapper with job information
+- For debugging and audit trails
+
+#### Supported Tools
+
+Currently supported for native output mode:
+- ✅ **Semgrep** - All output formats (json, sarif, text, etc.)
+- 🔄 **More tools coming soon** - Bandit, Bearer, Trivy, etc.
+
+Other tools will continue using standard output capture until native output is implemented.
+
 ### Synchronous Mode (Legacy)
 
 For backward compatibility, you can run scans synchronously:
