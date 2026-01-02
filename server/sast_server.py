@@ -1272,7 +1272,7 @@ def _semgrep_scan(params: Dict[str, Any]) -> Dict[str, Any]:
     # Resolve Windows path to Linux mount path
     resolved_target = resolve_windows_path(target)
 
-    command = f"semgrep --config={config}"
+    command = f"semgrep scan --config={config}"
 
     if lang:
         command += f" --lang={lang}"
@@ -2874,7 +2874,7 @@ def scan_project_structure():
             "tools": ["semgrep", "trufflehog", "gitleaks"],
             "targets": [resolved_path],
             "commands": [
-                f"semgrep --config=auto --json {resolved_path}",
+                f"semgrep scan --config=auto --json {resolved_path}",
                 f"trufflehog filesystem {resolved_path} --json",
                 f"gitleaks detect --source={resolved_path} --report-format=json"
             ]
