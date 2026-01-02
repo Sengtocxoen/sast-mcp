@@ -238,7 +238,7 @@ def semgrep():
         additional_args = params.get("additional_args", "")
 
         # Build command
-        command = f"semgrep --config={config_param}"
+        command = f"semgrep scan --config={config_param}"
 
         if lang:
             command += f" --lang={lang}"
@@ -409,7 +409,7 @@ def simple_comprehensive_scan():
             logger.info(f"Running {tool} scan on {target}")
 
             if tool == "semgrep":
-                command = f"semgrep --config=auto --json {target}"
+                command = f"semgrep scan --config=auto --json {target}"
                 result = execute_command(command, target, "semgrep")
 
             elif tool == "bandit":
