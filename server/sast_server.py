@@ -88,7 +88,8 @@ from tools.toon_converter import (
     convert_scan_result_to_toon,
     is_toon_available,
     calculate_token_savings,
-    prepare_toon_for_ai_analysis
+    prepare_toon_for_ai_analysis,
+    create_ai_compact_format
 )
 
 # Import AI analysis utilities
@@ -495,8 +496,25 @@ class JobManager:
                     logger.error(f"Error during TOON conversion: {str(e)}")
                     logger.error(traceback.format_exc())
                     # Don't raise - TOON conversion failure shouldn't fail the job
-            else:
-                logger.info("TOON converter not available, skipping TOON format generation")
+
+            # Always generate AI-compact format (doesn't require TOON)
+            try:
+                logger.info(f"Creating AI-compact format for job {job.job_id}")
+                ai_compact = create_ai_compact_format(full_result)
+
+                # Save compact format
+                ai_compact_path = resolved_output_file.rsplit('.', 1)[0] + '.ai-compact.json'
+                with open(ai_compact_path, 'w', encoding='utf-8') as f:
+                    json.dump(ai_compact, f, ensure_ascii=False)  # No indent for smaller size
+
+                ai_compact_size = os.path.getsize(ai_compact_path)
+                logger.info(f"Saved AI-compact format to {ai_compact_path} ({ai_compact_size} bytes)")
+                logger.info(f"AI-compact: {ai_compact['included_findings']}/{ai_compact['total_findings']} findings included, "
+                          f"truncated={ai_compact['truncated']}")
+
+            except Exception as e:
+                logger.error(f"Error creating AI-compact format: {str(e)}")
+                logger.error(traceback.format_exc())
 
         except Exception as e:
             logger.error(f"Error saving job result: {str(e)}")
