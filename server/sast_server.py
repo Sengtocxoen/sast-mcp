@@ -3508,7 +3508,7 @@ def health_check():
 
     # Essential SAST tools to check
     essential_tools = {
-        "semgrep": "semgrep --version",
+        "semgrep": "semgrep scan --version",
         "bandit": "bandit --version",
         "eslint": "eslint --version",
         "npm": "npm --version",
