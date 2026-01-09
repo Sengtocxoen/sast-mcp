@@ -163,6 +163,12 @@ PROCESS_MEMORY_LIMIT_MB = int(os.environ.get("PROCESS_MEMORY_LIMIT_MB", 2048))  
 MAX_RETRY_ATTEMPTS = int(os.environ.get("MAX_RETRY_ATTEMPTS", 2))  # Retry failed scans
 RETRY_BACKOFF_BASE = float(os.environ.get("RETRY_BACKOFF_BASE", 2.0))  # Exponential backoff multiplier
 
+# Synchronous Scan Mode Configuration
+# When enabled, scans run synchronously in the request thread instead of background jobs.
+# This avoids issues with multiprocessing semaphore deadlocks and job queue hangs.
+# Set to "0" or "false" to enable background job processing (not recommended).
+FORCE_SYNC_SCANS = os.environ.get("FORCE_SYNC_SCANS", "1").lower() in ("1", "true", "yes", "y")
+
 # Accuracy and Validation Configuration
 ENABLE_RESULT_VALIDATION = os.environ.get("ENABLE_RESULT_VALIDATION", "1").lower() in ("1", "true", "yes", "y")
 ENABLE_CHECKSUM_VERIFICATION = os.environ.get("ENABLE_CHECKSUM_VERIFICATION", "1").lower() in ("1", "true", "yes", "y")
@@ -1274,6 +1280,113 @@ def run_scan_in_background(tool_name: str, params: Dict[str, Any], scan_function
         raise
 
 
+def run_scan_synchronously(tool_name: str, params: Dict[str, Any], scan_function) -> Dict[str, Any]:
+    """
+    Execute a scan synchronously in the request thread.
+
+    This bypasses the background job queue and multiprocessing semaphore,
+    avoiding potential deadlocks and hanging issues with the ProcessPoolExecutor.
+
+    Args:
+        tool_name: Name of the tool (e.g., 'semgrep', 'bandit')
+        params: Scan parameters
+        scan_function: Function that performs the actual scan and returns results
+
+    Returns:
+        Response dict with scan results
+    """
+    job_id = str(uuid.uuid4())
+    started_at = datetime.now()
+    output_file = params.get("output_file", None)
+
+    # Generate default output file if not provided
+    if not output_file:
+        timestamp = started_at.strftime("%Y%m%d_%H%M%S")
+        filename = f"{tool_name}_{timestamp}_{job_id[:8]}.json"
+        output_file = os.path.join(DEFAULT_OUTPUT_DIR, filename)
+
+    logger.info(f"Starting synchronous scan {job_id} for tool {tool_name}")
+
+    try:
+        # Execute the scan function directly (no background processing)
+        result = scan_function(params)
+
+        completed_at = datetime.now()
+        duration_seconds = (completed_at - started_at).total_seconds()
+
+        # Prepare full result with metadata
+        full_result = {
+            "job_id": job_id,
+            "tool_name": tool_name,
+            "scan_params": params,
+            "started_at": started_at.isoformat(),
+            "completed_at": completed_at.isoformat(),
+            "duration_seconds": duration_seconds,
+            "scan_result": result,
+            "sync_mode": True
+        }
+
+        # Resolve Windows path if needed
+        resolved_output_file = resolve_windows_path(output_file) if output_file.startswith('F:') else output_file
+
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(resolved_output_file), exist_ok=True)
+
+        # Write JSON to file
+        with open(resolved_output_file, 'w', encoding='utf-8') as f:
+            json.dump(full_result, f, indent=2, ensure_ascii=False)
+
+        file_size = os.path.getsize(resolved_output_file)
+        logger.info(f"Saved synchronous scan result to {resolved_output_file} ({file_size} bytes)")
+
+        # Convert to TOON format if available
+        if is_toon_available():
+            try:
+                toon_output = convert_scan_result_to_toon(full_result)
+                if toon_output:
+                    toon_file_path = resolved_output_file.rsplit('.', 1)[0] + '.toon'
+                    with open(toon_file_path, 'w', encoding='utf-8') as f:
+                        f.write(toon_output)
+                    logger.info(f"Saved TOON format to {toon_file_path}")
+
+                    # Create AI-compact format
+                    ai_compact = create_ai_compact_format(full_result, toon_output)
+                    if ai_compact:
+                        ai_compact_path = resolved_output_file.rsplit('.', 1)[0] + '.ai-compact.json'
+                        with open(ai_compact_path, 'w', encoding='utf-8') as f:
+                            json.dump(ai_compact, f, indent=2, ensure_ascii=False)
+                        logger.info(f"Saved AI-compact format to {ai_compact_path}")
+            except Exception as e:
+                logger.warning(f"TOON conversion failed (non-fatal): {str(e)}")
+
+        logger.info(f"Synchronous scan {job_id} completed in {duration_seconds:.2f}s")
+
+        return {
+            "success": True,
+            "message": f"Scan completed successfully (synchronous mode)",
+            "job_id": job_id,
+            "job_status": "completed",
+            "output_file": output_file,
+            "duration_seconds": duration_seconds,
+            "summary": result.get("summary", {}),
+            "sync_mode": True,
+            "scan_result": result
+        }
+
+    except Exception as e:
+        logger.error(f"Synchronous scan {job_id} failed: {str(e)}")
+        logger.error(traceback.format_exc())
+
+        return {
+            "success": False,
+            "message": f"Scan failed: {str(e)}",
+            "job_id": job_id,
+            "job_status": "failed",
+            "error": str(e),
+            "sync_mode": True
+        }
+
+
 # ============================================================================
 # SAST TOOL ENDPOINTS
 # ============================================================================
@@ -1341,20 +1454,25 @@ def semgrep():
     - output_format: json, sarif, text, gitlab-sast
     - output_file: Path to save results (Windows format: F:/path/file.json)
     - additional_args: Additional Semgrep arguments
-    - background: Run in background (default: True)
+    - background: Run in background (default: False when FORCE_SYNC_SCANS is enabled)
+    - force_sync: Force synchronous execution regardless of background setting
     """
     try:
         params = request.json
-        background = params.get("background", True)
+        force_sync = params.get("force_sync", False)
+        background = params.get("background", not FORCE_SYNC_SCANS)
 
-        # Run in background by default
-        if background:
-            result = run_scan_in_background("semgrep", params, _semgrep_scan)
+        # Force synchronous mode when FORCE_SYNC_SCANS is enabled or force_sync is True
+        # This avoids multiprocessing semaphore deadlocks and job queue hangs
+        if FORCE_SYNC_SCANS or force_sync or not background:
+            logger.info(f"Running semgrep scan synchronously (FORCE_SYNC_SCANS={FORCE_SYNC_SCANS}, force_sync={force_sync})")
+            result = run_scan_synchronously("semgrep", params, _semgrep_scan)
             return jsonify(result)
 
-        # Legacy synchronous mode
+        # Background mode (not recommended - may hang due to semaphore issues)
         else:
-            result = _semgrep_scan(params)
+            logger.warning("Running semgrep in background mode - this may hang if job queue has issues")
+            result = run_scan_in_background("semgrep", params, _semgrep_scan)
             return jsonify(result)
 
     except Exception as e:
@@ -2201,20 +2319,25 @@ def nikto():
     - output_format: Output format (txt, html, csv, xml)
     - output_file: Path to save output file
     - additional_args: Additional Nikto arguments
-    - background: Run in background (default: True)
+    - background: Run in background (default: False when FORCE_SYNC_SCANS is enabled)
+    - force_sync: Force synchronous execution regardless of background setting
     """
     try:
         params = request.json
-        background = params.get("background", True)
+        force_sync = params.get("force_sync", False)
+        background = params.get("background", not FORCE_SYNC_SCANS)
 
-        # Run in background by default
-        if background:
-            result = run_scan_in_background("nikto", params, _nikto_scan)
+        # Force synchronous mode when FORCE_SYNC_SCANS is enabled or force_sync is True
+        # This avoids multiprocessing semaphore deadlocks and job queue hangs
+        if FORCE_SYNC_SCANS or force_sync or not background:
+            logger.info(f"Running nikto scan synchronously (FORCE_SYNC_SCANS={FORCE_SYNC_SCANS}, force_sync={force_sync})")
+            result = run_scan_synchronously("nikto", params, _nikto_scan)
             return jsonify(result)
 
-        # Legacy synchronous mode
+        # Background mode (not recommended - may hang due to semaphore issues)
         else:
-            result = _nikto_scan(params)
+            logger.warning("Running nikto in background mode - this may hang if job queue has issues")
+            result = run_scan_in_background("nikto", params, _nikto_scan)
             return jsonify(result)
 
     except Exception as e:
@@ -3467,10 +3590,15 @@ def health_check():
         "kali_tools_total": len(kali_tools),
         "process_health": process_health,
         "scan_statistics": scan_statistics,
+        "scan_mode": {
+            "force_sync_scans": FORCE_SYNC_SCANS,
+            "mode": "synchronous" if FORCE_SYNC_SCANS else "background",
+            "description": "Scans run synchronously to avoid job queue hangs" if FORCE_SYNC_SCANS else "Scans run in background (may hang with semaphore issues)"
+        },
         "multiprocessing_enabled": USE_MULTIPROCESSING,
         "max_parallel_scans": MAX_PARALLEL_SCANS,
         "max_process_workers": MAX_PROCESS_WORKERS if USE_MULTIPROCESSING else "N/A",
-        "version": "3.0.0"
+        "version": "3.1.0"
     })
 
 
@@ -3496,5 +3624,14 @@ if __name__ == "__main__":
     logger.info(f"Starting SAST Tools API Server on port {API_PORT}")
     logger.info("Supported SAST tools: Semgrep, Bearer, Graudit, Bandit, Gosec, Brakeman, ESLint, TruffleHog, Gitleaks, Safety, npm audit, Checkov, tfsec, Trivy, OWASP Dependency-Check")
     logger.info("Supported Kali tools: Nikto, Nmap, SQLMap, WPScan, DIRB, Lynis, Snyk, ClamAV")
+
+    # Log scan mode configuration
+    if FORCE_SYNC_SCANS:
+        logger.info("Scan mode: SYNCHRONOUS (recommended) - scans run directly in request thread")
+        logger.info("  This avoids multiprocessing semaphore deadlocks and job queue hangs")
+        logger.info("  Set FORCE_SYNC_SCANS=0 to enable background job processing (not recommended)")
+    else:
+        logger.warning("Scan mode: BACKGROUND - scans run in job queue (may hang with semaphore issues)")
+        logger.warning("  Consider setting FORCE_SYNC_SCANS=1 if scans are hanging")
 
     app.run(host="0.0.0.0", port=API_PORT, debug=DEBUG_MODE)
