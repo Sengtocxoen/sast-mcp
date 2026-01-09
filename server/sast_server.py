@@ -743,6 +743,72 @@ def save_scan_output_to_file(output_file: str, stdout_data: str, format_type: st
         }
 
 
+def get_enhanced_env() -> Dict[str, str]:
+    """
+    Get an enhanced environment dictionary with expanded PATH.
+
+    This ensures tools installed via pip, npm, go, gem, etc. are accessible
+    even when the server runs in a minimal environment (e.g., systemd service).
+
+    Returns:
+        Enhanced environment dictionary with expanded PATH
+    """
+    env = os.environ.copy()
+
+    # Common tool installation directories that may not be in the default PATH
+    additional_paths = [
+        # User-local Python installations (pip install --user)
+        "/root/.local/bin",
+        os.path.expanduser("~/.local/bin"),
+        # Go binaries
+        "/root/go/bin",
+        os.path.expanduser("~/go/bin"),
+        "/usr/local/go/bin",
+        # Node.js / npm global packages
+        "/usr/local/bin",
+        "/opt/node/bin",
+        "/opt/node22/bin",
+        # Ruby gems
+        "/usr/local/bundle/bin",
+        os.path.expanduser("~/.gem/bin"),
+        # System paths (ensure they're included)
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+        # Cargo (Rust)
+        "/root/.cargo/bin",
+        os.path.expanduser("~/.cargo/bin"),
+        # rbenv / pyenv
+        "/opt/rbenv/bin",
+        "/opt/rbenv/shims",
+        os.path.expanduser("~/.pyenv/bin"),
+        os.path.expanduser("~/.pyenv/shims"),
+    ]
+
+    # Get current PATH
+    current_path = env.get("PATH", "")
+    current_paths = set(current_path.split(":")) if current_path else set()
+
+    # Add additional paths that aren't already included
+    new_paths = []
+    for path in additional_paths:
+        if path and path not in current_paths and os.path.isdir(path):
+            new_paths.append(path)
+            current_paths.add(path)
+
+    # Prepend new paths to ensure they take precedence
+    if new_paths:
+        env["PATH"] = ":".join(new_paths) + ":" + current_path
+        logger.debug(f"Enhanced PATH with additional directories: {new_paths}")
+
+    return env
+
+
+# Cache the enhanced environment (computed once at module load)
+ENHANCED_ENV = get_enhanced_env()
+
+
 class CommandExecutor:
     """
     Enhanced command executor with proper timeout and output handling.
@@ -752,6 +818,7 @@ class CommandExecutor:
         - Real-time output capture (stdout and stderr)
         - Graceful termination (SIGTERM then SIGKILL if needed)
         - Partial result support (returns output even if timed out)
+        - Enhanced PATH environment for tool discovery
 
     Attributes:
         command: Shell command to execute
@@ -775,6 +842,7 @@ class CommandExecutor:
         self.command = command
         self.timeout = min(timeout, MAX_TIMEOUT)  # Enforce maximum timeout
         self.cwd = cwd
+        self.env = ENHANCED_ENV  # Use enhanced environment with expanded PATH
         self.process = None
         self.stdout_data = ""
         self.stderr_data = ""
@@ -813,7 +881,8 @@ class CommandExecutor:
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1,
-                cwd=self.cwd
+                cwd=self.cwd,
+                env=self.env  # Use enhanced PATH environment
             )
 
             # Start threads to read output continuously
