@@ -95,6 +95,8 @@ from tools.toon_converter import (
 # Import AI analysis utilities
 from tools.ai_analysis import (
     analyze_scan_with_ai,
+    analyze_scan_results,
+    create_toon_analysis_result,
     is_ai_configured,
     summarize_findings,
     prioritize_findings,
@@ -520,6 +522,30 @@ class JobManager:
 
             except Exception as e:
                 logger.error(f"Error creating AI-compact format: {str(e)}")
+                logger.error(traceback.format_exc())
+
+            # Generate TOON analysis result with AI-powered insights
+            try:
+                logger.info(f"Generating TOON analysis for job {job.job_id}")
+                ai_analysis = analyze_scan_results(full_result)
+                toon_analysis = create_toon_analysis_result(
+                    full_result, ai_analysis, include_raw_findings=True, max_findings=50
+                )
+
+                # Save TOON analysis result
+                toon_analysis_path = resolved_output_file.rsplit('.', 1)[0] + '.toon-analysis.json'
+                with open(toon_analysis_path, 'w', encoding='utf-8') as f:
+                    json.dump(toon_analysis, f, indent=2, ensure_ascii=False)
+
+                toon_analysis_size = os.path.getsize(toon_analysis_path)
+                logger.info(f"Saved TOON analysis to {toon_analysis_path} ({toon_analysis_size} bytes)")
+                logger.info(
+                    f"TOON analysis: risk={ai_analysis.get('risk_assessment', {}).get('overall_risk', 'UNKNOWN')}, "
+                    f"findings={ai_analysis.get('total_findings', 0)}"
+                )
+
+            except Exception as e:
+                logger.error(f"Error creating TOON analysis: {str(e)}")
                 logger.error(traceback.format_exc())
 
         except Exception as e:
@@ -1430,17 +1456,43 @@ def run_scan_synchronously(tool_name: str, params: Dict[str, Any], scan_function
 
         logger.info(f"Synchronous scan {job_id} completed in {duration_seconds:.2f}s")
 
-        return {
-            "success": True,
-            "message": f"Scan completed successfully (synchronous mode)",
-            "job_id": job_id,
-            "job_status": "completed",
-            "output_file": output_file,
-            "duration_seconds": duration_seconds,
-            "summary": result.get("summary", {}),
-            "sync_mode": True,
-            "scan_result": result
-        }
+        # Generate AI analysis and return as TOON-optimized format
+        try:
+            ai_analysis = analyze_scan_results(full_result)
+            toon_analysis = create_toon_analysis_result(
+                full_result, ai_analysis, include_raw_findings=True, max_findings=50
+            )
+
+            logger.info(
+                f"AI analysis complete for {job_id}: "
+                f"risk={ai_analysis.get('risk_assessment', {}).get('overall_risk', 'UNKNOWN')}, "
+                f"findings={ai_analysis.get('total_findings', 0)}"
+            )
+
+            return {
+                "success": True,
+                "message": f"Scan completed with AI analysis (toon format)",
+                "job_id": job_id,
+                "job_status": "completed",
+                "output_file": output_file,
+                "duration_seconds": duration_seconds,
+                "sync_mode": True,
+                "result_format": "toon-analysis",
+                "toon_result": toon_analysis
+            }
+        except Exception as analysis_err:
+            logger.warning(f"AI analysis failed, returning raw result: {str(analysis_err)}")
+            return {
+                "success": True,
+                "message": f"Scan completed successfully (synchronous mode)",
+                "job_id": job_id,
+                "job_status": "completed",
+                "output_file": output_file,
+                "duration_seconds": duration_seconds,
+                "summary": result.get("summary", {}),
+                "sync_mode": True,
+                "scan_result": result
+            }
 
     except Exception as e:
         logger.error(f"Synchronous scan {job_id} failed: {str(e)}")
@@ -3212,17 +3264,39 @@ def get_job_result(job_id: str):
                 "message": "Job was cancelled"
             })
 
-        # Job completed - read result from file
+        # Job completed - read result from file and return as TOON with AI analysis
         try:
             resolved_output_file = resolve_windows_path(job.output_file) if job.output_file.startswith('F:') else job.output_file
 
             with open(resolved_output_file, 'r', encoding='utf-8') as f:
                 result_data = json.load(f)
 
+            # Check if client requests TOON format (default: yes)
+            result_format = request.args.get("format", "toon")
+
+            if result_format == "toon":
+                try:
+                    ai_analysis = analyze_scan_results(result_data)
+                    toon_analysis = create_toon_analysis_result(
+                        result_data, ai_analysis, include_raw_findings=True, max_findings=50
+                    )
+
+                    return jsonify({
+                        "success": True,
+                        "status": "completed",
+                        "job": job.to_dict(),
+                        "result_format": "toon-analysis",
+                        "toon_result": toon_analysis
+                    })
+                except Exception as analysis_err:
+                    logger.warning(f"AI analysis failed for job {job_id}, returning raw: {str(analysis_err)}")
+                    # Fall through to raw result
+
             return jsonify({
                 "success": True,
                 "status": "completed",
                 "job": job.to_dict(),
+                "result_format": "json",
                 "result": result_data
             })
 
@@ -3234,6 +3308,74 @@ def get_job_result(job_id: str):
 
     except Exception as e:
         logger.error(f"Error getting job result: {str(e)}")
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+
+@app.route("/api/jobs/<job_id>/result-toon", methods=["GET"])
+def get_job_result_toon(job_id: str):
+    """
+    Get the result of a completed job in TOON format with AI analysis.
+
+    This endpoint always returns TOON-analyzed results, providing:
+    - Risk assessment with severity scoring
+    - Critical findings extracted and prioritized
+    - Remediation priorities with effort estimates
+    - False positive detection
+    - File hotspots (most affected files)
+    - Actionable recommendations
+
+    Query parameters:
+    - include_findings: Include raw findings in output (default: true)
+    - max_findings: Maximum findings to include (default: 50)
+    """
+    try:
+        job = job_manager.get_job(job_id)
+
+        if not job:
+            return jsonify({"error": "Job not found"}), 404
+
+        if job.status != JobStatus.COMPLETED:
+            return jsonify({
+                "success": False,
+                "status": job.status.value,
+                "message": f"Job is {job.status.value}, not yet completed"
+            })
+
+        # Read result file
+        try:
+            resolved_output_file = resolve_windows_path(job.output_file) if job.output_file.startswith('F:') else job.output_file
+
+            with open(resolved_output_file, 'r', encoding='utf-8') as f:
+                result_data = json.load(f)
+
+            # Parse query parameters
+            include_findings = request.args.get("include_findings", "true").lower() == "true"
+            max_findings = int(request.args.get("max_findings", 50))
+
+            # Perform AI analysis
+            ai_analysis = analyze_scan_results(result_data)
+            toon_analysis = create_toon_analysis_result(
+                result_data, ai_analysis,
+                include_raw_findings=include_findings,
+                max_findings=max_findings
+            )
+
+            return jsonify({
+                "success": True,
+                "status": "completed",
+                "result_format": "toon-analysis",
+                "toon_result": toon_analysis
+            })
+
+        except FileNotFoundError:
+            return jsonify({
+                "success": False,
+                "error": "Result file not found"
+            }), 404
+
+    except Exception as e:
+        logger.error(f"Error getting TOON job result: {str(e)}")
+        logger.error(traceback.format_exc())
         return jsonify({"error": f"Server error: {str(e)}"}), 500
 
 
