@@ -1237,6 +1237,100 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
         }
         return await sast_client.safe_post("api/command", data)
 
+    # ========================================================================
+    # AI ANALYSIS & TOON RESULT TOOLS
+    # ========================================================================
+
+    @mcp.tool()
+    async def get_scan_result_toon(
+        job_id: str,
+        include_findings: bool = True,
+        max_findings: int = 50
+    ) -> Dict[str, Any]:
+        """
+        Get scan results in TOON format with AI-powered analysis.
+
+        This is the recommended way to retrieve scan results. Returns a compact,
+        AI-analyzed result in TOON format that includes:
+        - Risk assessment with severity-based scoring (0-10 scale)
+        - Critical findings extracted and highlighted
+        - Remediation priorities with effort estimates
+        - False positive detection using heuristics
+        - File hotspots showing most affected files
+        - Actionable security recommendations
+
+        TOON format is 30-60% more token-efficient than raw JSON, making it
+        ideal for AI/LLM consumption while preserving all essential information.
+
+        Args:
+            job_id: Job ID returned from a background scan request
+            include_findings: Include individual findings in the output (default: True)
+            max_findings: Maximum number of findings to include, sorted by severity (default: 50)
+
+        Returns:
+            TOON-analyzed result with:
+            - toon_result.analysis.risk: Overall risk assessment (CRITICAL/HIGH/MEDIUM/LOW/INFO)
+            - toon_result.analysis.severity: Severity breakdown counts
+            - toon_result.analysis.critical_findings: Most critical issues found
+            - toon_result.analysis.top_priorities: Remediation priorities ranked by impact
+            - toon_result.analysis.recommendations: Actionable next steps
+            - toon_result.findings: Individual findings sorted by severity (if included)
+        """
+        endpoint = f"api/jobs/{job_id}/result-toon?include_findings={str(include_findings).lower()}&max_findings={max_findings}"
+        return await sast_client.safe_get(endpoint)
+
+    @mcp.tool()
+    async def analyze_scan_results(
+        job_id: str,
+        analysis_type: str = "full",
+        custom_prompt: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Perform AI-powered analysis on completed scan results.
+
+        Analyzes scan findings and provides intelligent insights including:
+        - Severity-weighted risk scoring
+        - Critical finding extraction
+        - Remediation priority ranking with effort estimates
+        - False positive detection using pattern-based heuristics
+        - File hotspot identification (files with most issues)
+        - Contextual security recommendations
+
+        Use this after a scan completes to get actionable security intelligence
+        instead of raw scan data.
+
+        Args:
+            job_id: Job ID of a completed scan to analyze
+            analysis_type: Type of analysis to perform:
+                          - "full" (default): Complete analysis with all sections
+                          - "quick": Summary and risk score only
+                          - "prioritization": Focus on remediation priorities
+            custom_prompt: Optional custom analysis instructions
+
+        Returns:
+            AI analysis results including risk assessment, priorities,
+            and actionable recommendations in TOON-optimized format
+        """
+        data = {
+            "job_id": job_id,
+            "analysis_type": analysis_type,
+            "custom_prompt": custom_prompt if custom_prompt else None
+        }
+        return await sast_client.safe_post("api/analysis/ai-summary", data)
+
+    @mcp.tool()
+    async def get_toon_ai_status() -> Dict[str, Any]:
+        """
+        Check the status of TOON converter and AI analysis features.
+
+        Returns:
+            Status of TOON and AI features including:
+            - toon_available: Whether TOON format conversion is available
+            - ai_configured: Whether AI service is configured
+            - features: Available analysis features
+        """
+        return await sast_client.safe_get("api/analysis/toon-status")
+
     return mcp
 
 
