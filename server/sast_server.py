@@ -3524,28 +3524,51 @@ def ai_summary():
             }), 400
 
         # Load AI payload
-        try:
-            resolved_output_file = resolve_windows_path(job.output_file) if job.output_file.startswith('F:') else job.output_file
-            ai_payload_path = resolved_output_file.rsplit('.', 1)[0] + '.ai-payload.json'
+        resolved_output_file = resolve_windows_path(job.output_file) if job.output_file.startswith('F:') else job.output_file
+        ai_payload_path = resolved_output_file.rsplit('.', 1)[0] + '.ai-payload.json'
 
+        try:
             with open(ai_payload_path, 'r', encoding='utf-8') as f:
                 ai_payload = json.load(f)
 
-            # Perform AI analysis (currently returns stub)
+            # Perform AI analysis (currently returns stub when AI service is not configured)
             analysis_result = analyze_scan_with_ai(ai_payload, custom_prompt=custom_prompt)
 
             return jsonify({
                 "success": True,
                 "job_id": job_id,
                 "analysis_type": analysis_type,
+                "result_format": "toon-analysis",
                 "analysis": analysis_result,
                 "ai_configured": is_ai_configured()
             })
 
         except FileNotFoundError:
-            return jsonify({
-                "error": "AI payload file not found. Ensure TOON converter is installed and job completed successfully."
-            }), 404
+            # Fallback: ai-payload.json is only created when python-toon is installed.
+            # Fall back to the always-available heuristic analysis using the main result file.
+            logger.info(f"AI payload file not found for job {job_id}, falling back to heuristic analysis")
+            try:
+                with open(resolved_output_file, 'r', encoding='utf-8') as f:
+                    result_data = json.load(f)
+
+                ai_analysis = analyze_scan_results(result_data)
+                toon_result = create_toon_analysis_result(
+                    result_data, ai_analysis, include_raw_findings=True, max_findings=50
+                )
+
+                return jsonify({
+                    "success": True,
+                    "job_id": job_id,
+                    "analysis_type": analysis_type,
+                    "result_format": "toon-analysis",
+                    "analysis_source": "heuristic",
+                    "ai_configured": is_ai_configured(),
+                    "toon_result": toon_result
+                })
+            except FileNotFoundError:
+                return jsonify({
+                    "error": "Result file not found. Job may have been cleaned up."
+                }), 404
 
     except Exception as e:
         logger.error(f"Error in AI summary endpoint: {str(e)}")
