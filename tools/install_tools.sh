@@ -486,6 +486,16 @@ else
     print_warning "MCP SDK may need manual verification"
 fi
 
+print_status "Installing python-toon (TOON format converter)..."
+python3 -m pip install --upgrade python-toon 2>&1 | grep -v "WARNING" | grep -v "already satisfied" | tail -3 || {
+    print_warning "python-toon installation had warnings, but may still work"
+}
+if python3 -c "from toon import encode, decode" 2>/dev/null; then
+    print_success "python-toon installed and verified"
+else
+    print_warning "python-toon may need manual installation: pip install python-toon"
+fi
+
 ################################################################################
 # VERIFICATION
 ################################################################################
