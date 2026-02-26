@@ -1296,8 +1296,10 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
         - File hotspot identification (files with most issues)
         - Contextual security recommendations
 
-        Use this after a scan completes to get actionable security intelligence
-        instead of raw scan data.
+        NOTE: When AI service is not configured (no AI_API_KEY), this falls back
+        to heuristic analysis identical to get_scan_result_toon(). The response
+        will include "analysis_source": "heuristic" in that case.
+        Use get_scan_result_toon() directly for the primary TOON-format output.
 
         Args:
             job_id: Job ID of a completed scan to analyze
@@ -1305,11 +1307,14 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
                           - "full" (default): Complete analysis with all sections
                           - "quick": Summary and risk score only
                           - "prioritization": Focus on remediation priorities
-            custom_prompt: Optional custom analysis instructions
+            custom_prompt: Optional custom analysis instructions (used when AI
+                          service is configured)
 
         Returns:
-            AI analysis results including risk assessment, priorities,
-            and actionable recommendations in TOON-optimized format
+            Analysis results in toon-analysis format. When AI service is
+            configured: AI-generated insights. Otherwise: heuristic analysis
+            with toon_result containing risk, severity, critical_findings,
+            top_priorities, file_hotspots, and recommendations.
         """
         data = {
             "job_id": job_id,
