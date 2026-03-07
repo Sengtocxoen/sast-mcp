@@ -66,3 +66,16 @@ scan-results/
 # OS specific
 Thumbs.db
 .DS_Store
+
+# Internal/sensitive files (project-specific, not for public repo)
+config.py
+Agent.md
+IMPLEMENTATION_LOG.md
+WEEKLY_SAST_GUIDE.md
+scan-all-deca-sast.py
+submit-all-scans.py
+weekly_sast_scan.py
+monitor-scans.py
+resource_monitor.py
+test_resource_monitor.py
+client/README_CLIENT.md
