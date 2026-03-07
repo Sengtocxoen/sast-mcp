@@ -141,6 +141,10 @@ CLAMAV_TIMEOUT = int(os.environ.get("CLAMAV_TIMEOUT", 14400))     # 4 hours
 SEMGREP_TIMEOUT = int(os.environ.get("SEMGREP_TIMEOUT", 7200))    # 2 hours
 BANDIT_TIMEOUT = int(os.environ.get("BANDIT_TIMEOUT", 1800))      # 30 minutes
 TRUFFLEHOG_TIMEOUT = int(os.environ.get("TRUFFLEHOG_TIMEOUT", 3600))  # 1 hour
+DEPENDENCY_CHECK_TIMEOUT = int(os.environ.get("DEPENDENCY_CHECK_TIMEOUT", 1800))  # 30 minutes
+
+# Tool binary paths
+DEPENDENCY_CHECK_PATH = os.environ.get("DEPENDENCY_CHECK_PATH", "dependency-check")
 
 # Path Resolution Configuration
 # These settings enable cross-platform operation (Windows client -> Linux server)
@@ -2167,8 +2171,11 @@ def dependency_check():
     Parameters:
     - target: Path to project directory
     - project_name: Name of the project
-    - format: Output format (HTML, XML, CSV, JSON, JUNIT, SARIF, ALL)
-    - scan: Comma-separated list of paths to scan
+    - format: Output format (HTML, XML, CSV, JSON, JUNIT, SARIF, JENKINS, GITLAB, ALL)
+    - scan: Comma-separated list of paths to scan (each becomes a separate -s flag)
+    - nvd_api_key: NVD API key for vulnerability data access
+    - noupdate: Disable automatic NVD/RetireJS data update (boolean)
+    - pretty_print: Pretty-print JSON/XML output (boolean)
     - additional_args: Additional dependency-check arguments
     """
     try:
@@ -2177,17 +2184,45 @@ def dependency_check():
         project_name = params.get("project_name", "project")
         output_format = params.get("format", "JSON")
         scan = params.get("scan", target)
+        nvd_api_key = params.get("nvd_api_key", "")
+        noupdate = params.get("noupdate", False)
+        pretty_print = params.get("pretty_print", False)
         additional_args = params.get("additional_args", "")
+
+        # Resolve Windows paths to Linux mount paths
+        resolved_target = resolve_windows_path(target)
+        scan_paths = [resolve_windows_path(p.strip()) for p in scan.split(",") if p.strip()]
 
         # Create temporary output directory
         output_dir = tempfile.mkdtemp()
 
-        command = f"dependency-check --project {project_name} --scan {scan} --format {output_format} --out {output_dir}"
+        # Build scan flags: each path gets its own -s flag
+        scan_flags = " ".join(f"-s {p}" for p in scan_paths)
+
+        command = (
+            f"{DEPENDENCY_CHECK_PATH} --project {project_name}"
+            f" {scan_flags}"
+            f" -f {output_format}"
+            f" -o {output_dir}"
+        )
+
+        if nvd_api_key:
+            command += f" --nvdApiKey {nvd_api_key}"
+
+        if noupdate:
+            command += " -n"
+
+        if pretty_print:
+            command += " --prettyPrint"
 
         if additional_args:
             command += f" {additional_args}"
 
-        result = execute_command(command, timeout=900)  # 15 minutes for large projects
+        result = execute_command(command, cwd=resolved_target, timeout=DEPENDENCY_CHECK_TIMEOUT)
+
+        # Add path resolution info to result
+        result["original_path"] = target
+        result["resolved_path"] = resolved_target
 
         # Read generated report
         try:
