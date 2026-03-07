@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 # Try to import python-toon, but provide fallback if not available
 try:
-    from python_toon import encode as toon_encode, decode as toon_decode
+    from toon import encode as toon_encode, decode as toon_decode
     TOON_AVAILABLE = True
     logger.info("TOON converter loaded successfully")
 except ImportError:
