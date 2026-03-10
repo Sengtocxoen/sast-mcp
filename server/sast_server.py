@@ -2,7 +2,8 @@
 """
 MCP-SAST-Server - Security Analysis Server for Claude Code
 
-Run: python3 sast_server.py [--port 6000] [--debug]
+Run from project root: python -m server.sast_server [--port 6000] [--debug]
+Or: python server/sast_server.py  (from project root)
 Config: server/config.py  |  Routes: server/routes/*.py  |  Core: server/core.py
 """
 import argparse
@@ -10,12 +11,13 @@ import logging
 import os
 import sys
 
-from flask import Flask
+# Project root on path first so "server" package and "tools" resolve
+_PROJECT_ROOT = os.path.realpath(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+os.chdir(_PROJECT_ROOT)
 
-# Project root on path for tools + server package
-_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _root not in sys.path:
-    sys.path.insert(0, _root)
+from flask import Flask
 
 from server.config import API_PORT, DEBUG_MODE, FORCE_SYNC_SCANS
 from server.routes import register_all
