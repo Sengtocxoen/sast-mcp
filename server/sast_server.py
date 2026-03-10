@@ -11,35 +11,18 @@ import logging
 import os
 import sys
 
-# Ensure "server" package is found whether run as "python3 server/sast_server.py" or "python3 sast_server.py" (from server/)
-_file = os.path.realpath(os.path.abspath(__file__))
+# Make "server" package importable: project root must be on sys.path before any server.* import.
+# When run as "python3 server/sast_server.py", Python puts server/ on path first; we need the parent.
+_file = os.path.abspath(os.path.realpath(__file__))
 _script_dir = os.path.dirname(_file)
-_PROJECT_ROOT = os.path.dirname(_script_dir)
-
-def _norm(p):
-    try:
-        if not p:
-            return None
-        r = os.path.realpath(os.path.abspath(p))
-        return r if os.path.isdir(r) else None
-    except Exception:
-        return None
-
-# Resolve to absolute project root (handle run from server/ as "python3 sast_server.py")
-_root_abs = _norm(_PROJECT_ROOT)
-if not _root_abs:
-    _cwd = _norm(os.getcwd())
-    _root_abs = os.path.dirname(_cwd) if (_cwd and os.path.basename(_cwd) == "server") else (_cwd or os.getcwd())
-if not _root_abs:
-    _root_abs = os.path.realpath(os.getcwd())
-_script_dir_norm = _norm(_script_dir)
-
-# Remove script dir so it doesn't shadow the "server" package
-sys.path = [p for p in sys.path if _norm(p) != _script_dir_norm]
-
-# Always put absolute project root first so "import server.config" works reliably
-sys.path.insert(0, _root_abs)
-os.chdir(_root_abs)
+_root = os.path.dirname(_script_dir)
+if not _root:
+    _root = os.path.realpath(os.getcwd())
+else:
+    _root = os.path.realpath(_root)
+# Force project root first so "import server.*" finds server/ under project root (works on Kali and elsewhere)
+sys.path.insert(0, _root)
+os.chdir(_root)
 
 from flask import Flask
 
