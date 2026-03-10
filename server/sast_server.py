@@ -11,8 +11,18 @@ import logging
 import os
 import sys
 
-# Project root on path first so "server" package and "tools" resolve
-_PROJECT_ROOT = os.path.realpath(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Ensure "server" package is found: run from project root (e.g. python3 server/sast_server.py)
+# Python adds the script's dir (server/) to sys.path, which breaks "import server.config"
+_file = os.path.realpath(os.path.abspath(__file__))
+_script_dir = os.path.dirname(_file)
+_PROJECT_ROOT = os.path.dirname(_script_dir)
+# Remove script dir from path so it doesn't shadow the server package
+def _norm(p):
+    try:
+        return os.path.realpath(p) if p and os.path.isdir(p) else None
+    except Exception:
+        return None
+sys.path = [p for p in sys.path if _norm(p) != _script_dir]
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 os.chdir(_PROJECT_ROOT)
