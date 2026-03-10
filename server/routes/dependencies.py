@@ -20,19 +20,38 @@ def register(app: Flask) -> None:
     def safety():
         try:
             params = request.json or {}
-            req_file = params.get("requirements_file", "requirements.txt")
-            json_output = params.get("json_output", True)
-            full_report = params.get("full_report", False)
+            # Safety CLI 3: "safety scan" scans project directory (cwd); no more "safety check -r file"
+            target = params.get("target", ".")
+            resolved = resolve_windows_path(target)
+            stage = params.get("stage", "")  # development | cicd | production
+            key = params.get("key", "")  # API key for cicd/production; or env SAFETY_API_KEY
+            debug = params.get("debug", False)
+            proxy_host = params.get("proxy_host", "")
+            proxy_port = params.get("proxy_port", "")
+            proxy_protocol = params.get("proxy_protocol", "")
+            disable_optional_telemetry = params.get("disable_optional_telemetry", False)
             additional_args = params.get("additional_args", "")
-            command = f"safety check -r {req_file}"
-            if json_output:
-                command += " --json"
-            if full_report:
-                command += " --full-report"
+            command_parts = ["safety"]
+            if stage:
+                command_parts.extend(["--stage", stage])
+            if key:
+                command_parts.extend(["--key", key])
+            if proxy_host:
+                command_parts.extend(["--proxy-host", proxy_host])
+                if proxy_port:
+                    command_parts.extend(["--proxy-port", proxy_port])
+                if proxy_protocol:
+                    command_parts.extend(["--proxy-protocol", proxy_protocol])
+            if disable_optional_telemetry:
+                command_parts.append("--disable-optional-telemetry")
+            if debug:
+                command_parts.append("--debug")
             if additional_args:
-                command += f" {additional_args}"
-            result = execute_command(command, timeout=1800)
-            if json_output and result.get("stdout"):
+                command_parts.append(additional_args)
+            command_parts.append("scan")
+            command = " ".join(command_parts)
+            result = execute_command(command, cwd=resolved, timeout=1800)
+            if result.get("stdout"):
                 try:
                     result["parsed_output"] = json.loads(result["stdout"])
                 except Exception:

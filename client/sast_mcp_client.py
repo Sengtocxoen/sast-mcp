@@ -611,31 +611,37 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
 
     @mcp.tool()
     async def safety_check(
-        requirements_file: str = "requirements.txt",
-        json_output: bool = True,
-        full_report: bool = False,
+        target: str = ".",
+        stage: str = "",
+        key: str = "",
+        debug: bool = False,
         max_accuracy: bool = True,
         additional_args: str = ""
     ) -> Dict[str, Any]:
         """
-        Execute Safety to check Python dependencies for known security vulnerabilities.
-        Checks Python packages against a database of known security advisories.
+        Run Safety CLI 3 scan on a Python project directory.
+        Scans the given directory for dependency vulnerabilities (replaces legacy safety check -r file).
 
         Args:
-            requirements_file: Path to requirements.txt file (default: requirements.txt)
-            json_output: Return JSON format (boolean)
-            full_report: Include full vulnerability details (boolean)
-            additional_args: Additional Safety arguments
+            target: Project directory to scan (default: current directory)
+            stage: Lifecycle stage: development | cicd | production (default: development)
+            key: API key for cicd/production; or set SAFETY_API_KEY env
+            debug: Enable debug output
+            additional_args: Extra Safety CLI arguments
 
         Returns:
-            List of vulnerable Python packages with CVE details and remediation advice
+            Scan result with vulnerability findings
         """
         data = {
-            "requirements_file": requirements_file,
-            "json_output": json_output,
-            "full_report": full_report,
+            "target": target,
             "additional_args": additional_args
         }
+        if stage:
+            data["stage"] = stage
+        if key:
+            data["key"] = key
+        if debug:
+            data["debug"] = True
         return await sast_client.safe_post("api/dependencies/safety", data)
 
     @mcp.tool()
@@ -709,37 +715,78 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
     @mcp.tool()
     async def checkov_scan(
         target: str = ".",
-        framework: str = "",
+        file: str = "",
         output_format: str = "json",
+        output_file_path: str = "",
+        framework: str = "",
+        skip_framework: str = "",
+        check: str = "",
+        skip_check: str = "",
+        soft_fail: bool = False,
+        soft_fail_on: str = "",
+        hard_fail_on: str = "",
+        baseline: str = "",
+        create_baseline: bool = False,
         compact: bool = False,
         quiet: bool = False,
         max_accuracy: bool = True,
         additional_args: str = ""
     ) -> Dict[str, Any]:
         """
-        Execute Checkov for Infrastructure as Code security and compliance scanning.
-        Scans Terraform, CloudFormation, Kubernetes, Dockerfile, and more.
+        Run Checkov for IaC security and compliance scanning.
+        Use target (directory) or file (path to file); -d and -f are mutually exclusive.
 
         Args:
-            target: Path to IaC directory (default: current directory)
-            framework: Specific framework to scan (terraform, cloudformation, kubernetes,
-                      helm, arm, dockerfile, secrets, github_configuration, etc.)
-            output_format: Output format (cli, json, junitxml, sarif, github_failed_only)
-            compact: Use compact output format (boolean)
-            quiet: Suppress verbose output (boolean)
-            additional_args: Additional Checkov arguments
+            target: IaC root directory (default: .). Ignored if file is set.
+            file: File(s) to scan (-f). Use instead of target for single/file scan.
+            output_format: cli, csv, cyclonedx, cyclonedx_json, json, junitxml,
+                          github_failed_only, gitlab_sast, sarif, spdx
+            output_file_path: Output file/folder for report
+            framework: Comma-separated or single framework (terraform, dockerfile, kubernetes, etc.)
+            skip_framework: Framework(s) to skip
+            check: Run only these checks (CKV_*, BC_*, or severity)
+            skip_check: Skip these checks
+            soft_fail: Always exit 0
+            soft_fail_on: Exit 0 if only these fail (severity or check IDs)
+            hard_fail_on: Non-zero exit for these
+            baseline: Path to .checkov.baseline file
+            create_baseline: Save results to .checkov.baseline
+            compact: Compact CLI output
+            quiet: Only failed checks
+            additional_args: Extra Checkov CLI arguments
 
         Returns:
-            IaC security misconfigurations and compliance violations
+            IaC scan result and parsed findings when output_format is json
         """
         data = {
             "target": target,
-            "framework": framework,
             "output_format": output_format,
             "compact": compact,
             "quiet": quiet,
             "additional_args": additional_args
         }
+        if file:
+            data["file"] = file
+        if output_file_path:
+            data["output_file_path"] = output_file_path
+        if framework:
+            data["framework"] = framework
+        if skip_framework:
+            data["skip_framework"] = skip_framework
+        if check:
+            data["check"] = check
+        if skip_check:
+            data["skip_check"] = skip_check
+        if soft_fail:
+            data["soft_fail"] = True
+        if soft_fail_on:
+            data["soft_fail_on"] = soft_fail_on
+        if hard_fail_on:
+            data["hard_fail_on"] = hard_fail_on
+        if baseline:
+            data["baseline"] = baseline
+        if create_baseline:
+            data["create_baseline"] = True
         return await sast_client.safe_post("api/iac/checkov", data)
 
     @mcp.tool()

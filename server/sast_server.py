@@ -10,18 +10,37 @@ import logging
 import os
 import sys
 
-# Server dir and project root from this file's location (no cwd/realpath so it works on any system).
-_server_dir = os.path.dirname(os.path.abspath(__file__))
+# Resolve server dir and project root from this file (always absolute so Kali/Linux finds config).
+_here = os.path.realpath(os.path.abspath(__file__))
+_server_dir = os.path.dirname(_here)
 _project_root = os.path.dirname(_server_dir)
-# [server_dir, project_root] so "config"/"core"/"routes" resolve and "tools" (at project root) resolve.
+# Force server dir first so "config", "core", "routes" resolve; then project root for "tools".
 sys.path.insert(0, _project_root)
 sys.path.insert(0, _server_dir)
 os.chdir(_project_root)
 
 from flask import Flask
 
-from config import API_PORT, DEBUG_MODE, FORCE_SYNC_SCANS
-from routes import register_all
+# Import config/routes; fallback to direct load if path still wrong (e.g. some Linux envs).
+try:
+    from config import API_PORT, DEBUG_MODE, FORCE_SYNC_SCANS
+    from routes import register_all
+except ModuleNotFoundError:
+    import importlib.util
+    _config_path = os.path.join(_server_dir, "config.py")
+    _spec = importlib.util.spec_from_file_location("config", _config_path)
+    _config = importlib.util.module_from_spec(_spec)
+    sys.modules["config"] = _config
+    _spec.loader.exec_module(_config)
+    API_PORT = _config.API_PORT
+    DEBUG_MODE = _config.DEBUG_MODE
+    FORCE_SYNC_SCANS = _config.FORCE_SYNC_SCANS
+    _routes_path = os.path.join(_server_dir, "routes", "__init__.py")
+    _rspec = importlib.util.spec_from_file_location("routes", _routes_path, submodule_search_locations=[os.path.join(_server_dir, "routes")])
+    _routes = importlib.util.module_from_spec(_rspec)
+    sys.modules["routes"] = _routes
+    _rspec.loader.exec_module(_routes)
+    register_all = _routes.register_all
 
 logging.basicConfig(
     level=logging.INFO,

@@ -67,8 +67,10 @@ scan-results/
 Thumbs.db
 .DS_Store
 
+# Exception: server/config.py is required (do not ignore)
+!server/config.py
+
 # Internal/sensitive files (project-specific, not for public repo)
-config.py
 Agent.md
 IMPLEMENTATION_LOG.md
 WEEKLY_SAST_GUIDE.md

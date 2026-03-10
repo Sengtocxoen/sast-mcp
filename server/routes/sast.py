@@ -221,15 +221,45 @@ def register(app: Flask) -> None:
     def nodejsscan():
         try:
             params = request.json or {}
-            target = params.get("target", ".")
+            # path(s): single "target" or list "paths" (CLI: [path ...])
+            paths_param = params.get("paths")
+            if paths_param is not None:
+                paths = [resolve_windows_path(p) for p in (paths_param if isinstance(paths_param, list) else [paths_param])]
+            else:
+                paths = [resolve_windows_path(params.get("target", "."))]
+            output_format = params.get("output_format", "json").lower()
             output_file = params.get("output_file", "")
+            config_file = params.get("config", "")
+            missing_controls = params.get("missing_controls", False)
+            exit_warning = params.get("exit_warning", False)
             additional_args = params.get("additional_args", "")
-            command = f"nodejsscan -d {target}"
+            command_parts = ["nodejsscan"]
+            if output_format == "sarif":
+                command_parts.append("--sarif")
+            elif output_format == "sonarqube":
+                command_parts.append("--sonarqube")
+            elif output_format == "html":
+                command_parts.append("--html")
+            else:
+                command_parts.append("--json")
             if output_file:
-                command += f" -o {output_file}"
+                command_parts.extend(["-o", output_file])
+            if config_file:
+                command_parts.extend(["-c", resolve_windows_path(config_file)])
+            if missing_controls:
+                command_parts.append("--missing-controls")
+            if exit_warning:
+                command_parts.append("-w")
             if additional_args:
-                command += f" {additional_args}"
+                command_parts.append(additional_args)
+            command_parts.extend(paths)
+            command = " ".join(command_parts)
             result = execute_command(command, timeout=3600)
+            if output_format == "json" and result.get("stdout"):
+                try:
+                    result["parsed_output"] = json.loads(result["stdout"])
+                except Exception:
+                    pass
             return jsonify(response_as_toon("nodejsscan", params, result))
         except Exception as e:
             logger.error(f"nodejsscan: {e}\n{traceback.format_exc()}")

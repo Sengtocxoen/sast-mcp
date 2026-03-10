@@ -428,33 +428,31 @@ def trufflehog():
 @app.route("/api/dependencies/safety", methods=["POST"])
 @require_api_key
 def safety():
-    """Execute Safety Python dependency checker"""
+    """Execute Safety CLI 3: safety scan (scans project directory)."""
     try:
         params = request.json or {}
-        requirements_file = params.get("requirements_file", "requirements.txt")
-        json_output = params.get("json_output", True)
-        full_report = params.get("full_report", False)
+        target = params.get("target", ".")
+        stage = params.get("stage", "")
+        key = params.get("key", "")
+        debug = params.get("debug", False)
         additional_args = params.get("additional_args", "")
-
-        command = f"safety check -r {requirements_file}"
-
-        if json_output:
-            command += " --json"
-
-        if full_report:
-            command += " --full-report"
-
+        command_parts = ["safety"]
+        if stage:
+            command_parts.extend(["--stage", stage])
+        if key:
+            command_parts.extend(["--key", key])
+        if debug:
+            command_parts.append("--debug")
         if additional_args:
-            command += f" {additional_args}"
-
-        result = execute_command(command, requirements_file, "safety")
-
-        if json_output and result["stdout"]:
+            command_parts.append(additional_args)
+        command_parts.append("scan")
+        command = " ".join(command_parts)
+        result = execute_command(command, target, "safety")
+        if result.get("stdout"):
             try:
                 result["parsed_output"] = json.loads(result["stdout"])
-            except:
+            except Exception:
                 pass
-
         return jsonify(result)
     except Exception as e:
         logger.error(f"Error in safety endpoint: {str(e)}")
@@ -490,11 +488,9 @@ def simple_comprehensive_scan():
                 result = execute_command(command, target, "trufflehog")
 
             elif tool == "safety":
-                if os.path.exists(f"{target}/requirements.txt"):
-                    command = f"safety check -r {target}/requirements.txt --json"
-                    result = execute_command(command, target, "safety")
-                else:
-                    result = {"error": "No requirements.txt found", "success": False}
+                # Safety CLI 3: safety scan (scans project directory)
+                command = "safety scan"
+                result = execute_command(command, target, "safety")
 
             else:
                 result = {"error": f"Unknown tool: {tool}", "success": False}
