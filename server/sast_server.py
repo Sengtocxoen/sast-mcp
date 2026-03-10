@@ -25,25 +25,21 @@ def _norm(p):
     except Exception:
         return None
 
-# If script was run as "sast_server.py" from server/, __file__ can make _PROJECT_ROOT wrong; use cwd
-_root_norm = _norm(_PROJECT_ROOT)
-if not _root_norm:
+# Resolve to absolute project root (handle run from server/ as "python3 sast_server.py")
+_root_abs = _norm(_PROJECT_ROOT)
+if not _root_abs:
     _cwd = _norm(os.getcwd())
-    # If we're in server/, project root is parent
-    if _cwd and os.path.basename(_cwd) == "server":
-        _PROJECT_ROOT = os.path.dirname(_cwd)
-    else:
-        _PROJECT_ROOT = _cwd or os.getcwd()
-    _root_norm = _norm(_PROJECT_ROOT)
+    _root_abs = os.path.dirname(_cwd) if (_cwd and os.path.basename(_cwd) == "server") else (_cwd or os.getcwd())
+if not _root_abs:
+    _root_abs = os.path.realpath(os.getcwd())
 _script_dir_norm = _norm(_script_dir)
 
 # Remove script dir so it doesn't shadow the "server" package
 sys.path = [p for p in sys.path if _norm(p) != _script_dir_norm]
 
-# Ensure project root is first so "import server.config" resolves to server/ under project root
-if _root_norm and (_root_norm not in {_norm(p) for p in sys.path}):
-    sys.path.insert(0, _PROJECT_ROOT)
-os.chdir(_PROJECT_ROOT)
+# Always put absolute project root first so "import server.config" works reliably
+sys.path.insert(0, _root_abs)
+os.chdir(_root_abs)
 
 from flask import Flask
 
