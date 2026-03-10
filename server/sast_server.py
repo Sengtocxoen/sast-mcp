@@ -1,37 +1,27 @@
 #!/usr/bin/env python3
 """
-MCP-SAST-Server - Security Analysis Server for Claude Code
+MCP-SAST-Server - Security Analysis Server for Claude Code.
 
-Run from project root:
-  python -m server.sast_server [--port 6000] [--debug]   <- recommended (always finds server package)
-  python run_server.py [--port 6000] [--debug]           <- same, via launcher
-  python server/sast_server.py ...                       <- may fail with "No module named 'server.config'" on some systems
-
-The error "No module named 'server.config'" means Python cannot find the server PACKAGE (the server/
-folder), not that config.py is broken. Fix: run with -m or run_server.py from project root.
+Run from project root:  python3 server/sast_server.py [--port 6000] [--debug]
+Imports use the server folder as root (config, core, routes) so no 'server' package is required on path.
 """
 import argparse
 import logging
 import os
 import sys
 
-# Make "server" package importable: project root must be on sys.path before any server.* import.
-# When run as "python3 server/sast_server.py", Python puts server/ on path first; we need the parent.
-_file = os.path.abspath(os.path.realpath(__file__))
-_script_dir = os.path.dirname(_file)
-_root = os.path.dirname(_script_dir)
-if not _root:
-    _root = os.path.realpath(os.getcwd())
-else:
-    _root = os.path.realpath(_root)
-# Force project root first so "import server.*" finds server/ under project root (works on Kali and elsewhere)
-sys.path.insert(0, _root)
-os.chdir(_root)
+# Server dir and project root from this file's location (no cwd/realpath so it works on any system).
+_server_dir = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.dirname(_server_dir)
+# [server_dir, project_root] so "config"/"core"/"routes" resolve and "tools" (at project root) resolve.
+sys.path.insert(0, _project_root)
+sys.path.insert(0, _server_dir)
+os.chdir(_project_root)
 
 from flask import Flask
 
-from server.config import API_PORT, DEBUG_MODE, FORCE_SYNC_SCANS
-from server.routes import register_all
+from config import API_PORT, DEBUG_MODE, FORCE_SYNC_SCANS
+from routes import register_all
 
 logging.basicConfig(
     level=logging.INFO,

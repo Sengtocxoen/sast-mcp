@@ -8,14 +8,14 @@ from typing import Any, Dict
 
 from flask import Flask, request, jsonify
 
-from server.core import (
+from core import (
     execute_command,
     resolve_windows_path,
     run_scan_synchronously,
     run_scan_in_background,
     response_as_toon,
 )
-from server.config import (
+from config import (
     FORCE_SYNC_SCANS,
     NIKTO_TIMEOUT,
     NMAP_TIMEOUT,

@@ -7,8 +7,8 @@ from typing import Any, Dict
 
 from flask import Flask, request, jsonify
 
-from server.config import TRUFFLEHOG_TIMEOUT
-from server.core import execute_command, resolve_windows_path, response_as_toon
+from config import TRUFFLEHOG_TIMEOUT
+from core import execute_command, resolve_windows_path, response_as_toon
 
 logger = logging.getLogger(__name__)
 

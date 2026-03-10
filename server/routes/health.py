@@ -4,8 +4,8 @@ Health check route: GET /health with tool availability and scan stats.
 import logging
 from flask import Flask, jsonify
 
-from server.core import execute_command, check_process_health, scan_stats_lock, scan_stats
-from server.config import (
+from core import execute_command, check_process_health, scan_stats_lock, scan_stats
+from config import (
     DEPENDENCY_CHECK_PATH,
     FORCE_SYNC_SCANS,
     USE_MULTIPROCESSING,

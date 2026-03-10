@@ -10,7 +10,7 @@ from datetime import datetime
 import psutil
 from flask import Flask, request, jsonify
 
-from server.core import (
+from core import (
     job_manager,
     JobStatus,
     resolve_windows_path,
@@ -18,7 +18,7 @@ from server.core import (
     scan_stats_lock,
     scan_stats,
 )
-from server.config import (
+from config import (
     MAX_PAGE_SIZE,
     DEFAULT_PAGE_SIZE,
     USE_MULTIPROCESSING,

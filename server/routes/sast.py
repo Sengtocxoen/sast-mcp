@@ -9,12 +9,12 @@ from typing import Any, Dict
 
 from flask import Flask, request, jsonify
 
-from server.config import (
+from config import (
     BANDIT_TIMEOUT,
     FORCE_SYNC_SCANS,
     SEMGREP_TIMEOUT,
 )
-from server.core import (
+from core import (
     execute_command,
     resolve_windows_path,
     run_scan_in_background,

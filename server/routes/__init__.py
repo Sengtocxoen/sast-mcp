@@ -6,7 +6,7 @@ from flask import Flask
 
 
 def register_all(app: Flask) -> None:
-    from server.routes import sast, secrets, dependencies, iac, container, kali, util, jobs, analysis, health
+    from . import sast, secrets, dependencies, iac, container, kali, util, jobs, analysis, health
     sast.register(app)
     secrets.register(app)
     dependencies.register(app)

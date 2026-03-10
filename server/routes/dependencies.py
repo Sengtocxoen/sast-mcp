@@ -9,8 +9,8 @@ from typing import Any, Dict
 
 from flask import Flask, request, jsonify
 
-from server.config import DEPENDENCY_CHECK_PATH, DEPENDENCY_CHECK_TIMEOUT
-from server.core import execute_command, resolve_windows_path, response_as_toon
+from config import DEPENDENCY_CHECK_PATH, DEPENDENCY_CHECK_TIMEOUT
+from core import execute_command, resolve_windows_path, response_as_toon
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +125,7 @@ def register(app: Flask) -> None:
     @app.route("/api/dependencies/snyk", methods=["POST"])
     def snyk():
         try:
-            from server.config import SNYK_TIMEOUT
+            from config import SNYK_TIMEOUT
             params = request.json or {}
             target = params.get("target", ".")
             test_type = params.get("test_type", "test")

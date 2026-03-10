@@ -23,13 +23,7 @@ from typing import Any, Dict, List, Optional
 
 import psutil
 
-# Ensure project root is on path for tools
-if __name__ != "__main__":
-    _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if _root not in sys.path:
-        sys.path.insert(0, _root)
-
-from server.config import (
+from config import (
     COMMAND_TIMEOUT,
     DEFAULT_OUTPUT_DIR,
     DEFAULT_PAGE_SIZE,
@@ -283,7 +277,7 @@ class JobManager:
         return True
 
     def cleanup_old_jobs(self) -> int:
-        from server.config import JOB_RETENTION_HOURS
+        from config import JOB_RETENTION_HOURS
         with self.lock:
             now = datetime.now()
             to_remove = [jid for jid, j in self.jobs.items() if (now - j.created_at).total_seconds() / 3600 > JOB_RETENTION_HOURS]

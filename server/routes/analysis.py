@@ -6,7 +6,7 @@ import logging
 
 from flask import Flask, request, jsonify
 
-from server.core import job_manager, resolve_windows_path, JobStatus
+from core import job_manager, resolve_windows_path, JobStatus
 from tools.ai_analysis import (
     analyze_scan_with_ai,
     analyze_scan_results,

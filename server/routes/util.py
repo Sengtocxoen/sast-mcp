@@ -8,8 +8,8 @@ from typing import Any, Dict
 
 from flask import Flask, request, jsonify
 
-from server.core import execute_command, resolve_windows_path, scan_stats_lock, scan_stats
-from server.config import (
+from core import execute_command, resolve_windows_path, scan_stats_lock, scan_stats
+from config import (
     COMMAND_TIMEOUT,
     DEFAULT_PAGE_SIZE,
     MOUNT_POINT,
