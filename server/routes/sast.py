@@ -45,6 +45,10 @@ def _semgrep_scan(params: Dict[str, Any]) -> Dict[str, Any]:
     result = execute_command(command, timeout=SEMGREP_TIMEOUT)
     result["original_path"] = target
     result["resolved_path"] = resolved_target
+    if result.get("return_code", 0) != 0 or not result.get("stdout"):
+        result["error"] = result.get("stderr", "semgrep failed with no output")
+        result["summary"] = {}
+        return result
     summary = {}
     if output_format == "json" and result.get("stdout"):
         try:

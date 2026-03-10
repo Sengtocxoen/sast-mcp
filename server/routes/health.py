@@ -22,7 +22,7 @@ def register(app: Flask) -> None:
     @app.route("/health", methods=["GET"])
     def health_check():
         essential_tools = {
-            "semgrep": "semgrep scan --version",
+            "semgrep": "semgrep --version",
             "bandit": "bandit --version",
             "eslint": "eslint --version",
             "npm": "npm --version",

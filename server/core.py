@@ -578,6 +578,18 @@ def run_scan_synchronously(tool_name: str, params: Dict[str, Any], scan_function
     try:
         result = scan_function(params)
         completed = datetime.now()
+        if not result.get("success", True) or result.get("error"):
+            return {
+                "success": False,
+                "message": result.get("error", "Scan failed"),
+                "job_id": job_id,
+                "job_status": "failed",
+                "error": result.get("error", "Tool reported failure"),
+                "sync_mode": True,
+                "duration_seconds": (completed - started).total_seconds(),
+                "output_file": output_file,
+                "scan_result": result,
+            }
         full_result = {
             "job_id": job_id, "tool_name": tool_name, "scan_params": params,
             "started_at": started.isoformat(), "completed_at": completed.isoformat(),
