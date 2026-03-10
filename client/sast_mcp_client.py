@@ -1096,6 +1096,47 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
     # ========================================================================
 
     @mcp.tool()
+    async def batch_scan_dirs(
+        target: str = ".",
+        max_depth: int = 1,
+        min_files: int = 1,
+        max_targets: int = 20
+    ) -> Dict[str, Any]:
+        """
+        Split a large directory into smaller scan targets to avoid token overload.
+
+        Use this BEFORE scanning large codebases. It lists subdirectories as
+        individual scan targets so you can scan each one separately and retrieve
+        paginated results without hitting token limits.
+
+        Workflow:
+        1. Call batch_scan_dirs(target="F:/work/Resola/Deca") to get list of sub-targets
+        2. For each target in result["targets"], call the appropriate scan tool
+        3. Use get_scan_result_toon(job_id, page=1) to fetch findings page by page
+
+        Args:
+            target: Root directory to split into scan targets
+            max_depth: Depth of directory splitting (1=immediate subdirs, default: 1)
+            min_files: Minimum file count for a subdir to be included (default: 1)
+            max_targets: Maximum number of targets to return (default: 20)
+
+        Returns:
+            List of scan targets with:
+            - targets[].path: Windows path to use as scan target
+            - targets[].name: Directory name
+            - targets[].file_count: Estimated number of files
+            - total_scan_targets: Number of targets found
+            - recommendation: Suggested scanning strategy
+        """
+        data = {
+            "target": target,
+            "max_depth": max_depth,
+            "min_files": min_files,
+            "max_targets": max_targets
+        }
+        return await sast_client.safe_post("api/util/batch-scan-dirs", data)
+
+    @mcp.tool()
     async def scan_project_structure(
         project_path: str = ".",
         deep_scan: bool = True,
@@ -1245,7 +1286,8 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
     async def get_scan_result_toon(
         job_id: str,
         include_findings: bool = True,
-        max_findings: int = 50
+        page: int = 1,
+        page_size: int = 20
     ) -> Dict[str, Any]:
         """
         Get scan results in TOON format with AI-powered analysis.
@@ -1263,9 +1305,10 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
         ideal for AI/LLM consumption while preserving all essential information.
 
         Args:
-            job_id: Job ID returned from a background scan request
+            job_id: Job ID returned from a scan request
             include_findings: Include individual findings in the output (default: True)
-            max_findings: Maximum number of findings to include, sorted by severity (default: 50)
+            page: Page number for paginated findings (default: 1, starts at 1)
+            page_size: Number of findings per page (default: 20, max: 100)
 
         Returns:
             TOON-analyzed result with:
@@ -1274,9 +1317,13 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             - toon_result.analysis.critical_findings: Most critical issues found
             - toon_result.analysis.top_priorities: Remediation priorities ranked by impact
             - toon_result.analysis.recommendations: Actionable next steps
-            - toon_result.findings: Individual findings sorted by severity (if included)
+            - toon_result.findings: Paginated findings sorted by severity (if included)
+            - pagination.total_pages: Total number of pages available
+            - pagination.has_next: Whether more pages exist
         """
-        endpoint = f"api/jobs/{job_id}/result-toon?include_findings={str(include_findings).lower()}&max_findings={max_findings}"
+        page = max(1, page)
+        page_size = min(100, max(1, page_size))
+        endpoint = f"api/jobs/{job_id}/result-toon?include_findings={str(include_findings).lower()}&page={page}&page_size={page_size}"
         return await sast_client.safe_get(endpoint)
 
     @mcp.tool()

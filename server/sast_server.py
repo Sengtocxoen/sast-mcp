@@ -175,6 +175,13 @@ RETRY_BACKOFF_BASE = float(os.environ.get("RETRY_BACKOFF_BASE", 2.0))  # Exponen
 # Set to "0" or "false" to enable background job processing (not recommended).
 FORCE_SYNC_SCANS = os.environ.get("FORCE_SYNC_SCANS", "1").lower() in ("1", "true", "yes", "y")
 
+# Output Pagination Configuration
+# Limits findings per response to control token consumption
+DEFAULT_PAGE_SIZE = int(os.environ.get("DEFAULT_PAGE_SIZE", 20))   # Findings per page
+MAX_PAGE_SIZE = int(os.environ.get("MAX_PAGE_SIZE", 100))           # Max allowed per page
+SYNC_RESPONSE_INCLUDE_FINDINGS = os.environ.get("SYNC_RESPONSE_INCLUDE_FINDINGS", "0").lower() in ("1", "true", "yes", "y")
+SYNC_RESPONSE_MAX_FINDINGS = int(os.environ.get("SYNC_RESPONSE_MAX_FINDINGS", 10))  # Findings in initial sync response
+
 # Accuracy and Validation Configuration
 ENABLE_RESULT_VALIDATION = os.environ.get("ENABLE_RESULT_VALIDATION", "1").lower() in ("1", "true", "yes", "y")
 ENABLE_CHECKSUM_VERIFICATION = os.environ.get("ENABLE_CHECKSUM_VERIFICATION", "1").lower() in ("1", "true", "yes", "y")
@@ -1463,26 +1470,43 @@ def run_scan_synchronously(tool_name: str, params: Dict[str, Any], scan_function
         # Generate AI analysis and return as TOON-optimized format
         try:
             ai_analysis = analyze_scan_results(full_result)
+            total_findings = ai_analysis.get("total_findings", 0)
+
+            # In sync mode: return summary only (no raw findings) to limit token output.
+            # Findings are saved to disk and available via get_scan_result_toon() with pagination.
             toon_analysis = create_toon_analysis_result(
-                full_result, ai_analysis, include_raw_findings=True, max_findings=50
+                full_result, ai_analysis,
+                include_raw_findings=SYNC_RESPONSE_INCLUDE_FINDINGS,
+                max_findings=SYNC_RESPONSE_MAX_FINDINGS
             )
 
             logger.info(
                 f"AI analysis complete for {job_id}: "
                 f"risk={ai_analysis.get('risk_assessment', {}).get('overall_risk', 'UNKNOWN')}, "
-                f"findings={ai_analysis.get('total_findings', 0)}"
+                f"findings={total_findings}"
             )
+
+            # Calculate pagination info for the caller
+            total_pages = max(1, (total_findings + DEFAULT_PAGE_SIZE - 1) // DEFAULT_PAGE_SIZE)
 
             return {
                 "success": True,
-                "message": f"Scan completed with AI analysis (toon format)",
+                "message": f"Scan completed. {total_findings} findings saved to disk.",
                 "job_id": job_id,
                 "job_status": "completed",
                 "output_file": output_file,
                 "duration_seconds": duration_seconds,
                 "sync_mode": True,
                 "result_format": "toon-analysis",
-                "toon_result": toon_analysis
+                "toon_result": toon_analysis,
+                "pagination": {
+                    "total_findings": total_findings,
+                    "total_pages": total_pages,
+                    "page_size": DEFAULT_PAGE_SIZE,
+                    "current_page": 0,
+                    "has_more": total_findings > 0,
+                    "hint": f"Call get_scan_result_toon(job_id='{job_id}', page=1) to get findings page by page (page_size={DEFAULT_PAGE_SIZE})"
+                }
             }
         except Exception as analysis_err:
             logger.warning(f"AI analysis failed, returning raw result: {str(analysis_err)}")
@@ -3026,6 +3050,112 @@ def generic_command():
         return jsonify({"error": f"Server error: {str(e)}"}), 500
 
 
+@app.route("/api/util/batch-scan-dirs", methods=["POST"])
+def batch_scan_dirs():
+    """
+    List top-level subdirectories of a target path as individual scan targets.
+    This helps split large directory scans into smaller, manageable chunks
+    to avoid excessive token output in scan results.
+
+    Parameters:
+    - target: Root path to split into subdirectory targets
+    - max_depth: How deep to split (1=immediate subdirs, 2=one level deeper)
+    - min_files: Minimum number of files in a subdir to include it as a target
+    - max_targets: Maximum number of targets to return (default: 20)
+    - tool: Optional scan tool hint for filtering relevant subdirs
+    """
+    try:
+        params = request.json or {}
+        target = params.get("target", ".")
+        max_depth = min(3, max(1, int(params.get("max_depth", 1))))
+        min_files = int(params.get("min_files", 1))
+        max_targets = min(50, int(params.get("max_targets", 20)))
+
+        resolved_target = resolve_windows_path(target) if target.startswith('F:') or target.startswith('f:') else target
+
+        if not os.path.exists(resolved_target):
+            return jsonify({"error": f"Target path does not exist: {resolved_target}"}), 400
+
+        if not os.path.isdir(resolved_target):
+            return jsonify({"error": f"Target must be a directory: {resolved_target}"}), 400
+
+        def count_files(path, current_depth=0):
+            """Count files in a directory (non-recursive at depth 0)"""
+            try:
+                total = 0
+                for entry in os.scandir(path):
+                    if entry.is_file(follow_symlinks=False):
+                        total += 1
+                    elif entry.is_dir(follow_symlinks=False) and current_depth < 2:
+                        total += count_files(entry.path, current_depth + 1)
+                return total
+            except PermissionError:
+                return 0
+
+        def get_scan_targets(root_path, depth=1):
+            """Get list of scan targets by splitting into subdirectories"""
+            targets = []
+            try:
+                entries = sorted(os.scandir(root_path), key=lambda e: e.name)
+                for entry in entries:
+                    if entry.name.startswith('.') or entry.name in ('node_modules', '__pycache__', '.git', 'vendor', 'dist', 'build', '.venv', 'venv'):
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        file_count = count_files(entry.path)
+                        if file_count >= min_files:
+                            # Convert back to Windows-style path for the client
+                            linux_path = entry.path
+                            # Convert linux path back to windows path for client
+                            if linux_path.startswith(MOUNT_POINT):
+                                client_path = linux_path.replace(MOUNT_POINT, WINDOWS_BASE, 1).replace('/', '\\')
+                            else:
+                                client_path = linux_path
+                            targets.append({
+                                "path": client_path,
+                                "linux_path": linux_path,
+                                "name": entry.name,
+                                "file_count": file_count,
+                                "is_dir": True
+                            })
+            except PermissionError:
+                pass
+            return targets
+
+        targets = get_scan_targets(resolved_target, max_depth)
+
+        # If no subdirs found or too few, return the root itself
+        if not targets:
+            targets = [{
+                "path": target,
+                "linux_path": resolved_target,
+                "name": os.path.basename(resolved_target),
+                "file_count": count_files(resolved_target),
+                "is_dir": True
+            }]
+
+        # Sort by file count descending, limit to max_targets
+        targets.sort(key=lambda t: t["file_count"], reverse=True)
+        targets = targets[:max_targets]
+
+        total_files = sum(t["file_count"] for t in targets)
+
+        return jsonify({
+            "success": True,
+            "root_target": target,
+            "resolved_root": resolved_target,
+            "total_scan_targets": len(targets),
+            "total_files_estimated": total_files,
+            "targets": targets,
+            "recommendation": f"Scan each target separately to keep results manageable (page_size={DEFAULT_PAGE_SIZE} findings per page)",
+            "hint": "Use each target['path'] as the target parameter in your scan tool call"
+        })
+
+    except Exception as e:
+        logger.error(f"Error in batch-scan-dirs: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+
 @app.route("/api/util/scan-project-structure", methods=["POST"])
 def scan_project_structure():
     """
@@ -3385,21 +3515,51 @@ def get_job_result_toon(job_id: str):
 
             # Parse query parameters
             include_findings = request.args.get("include_findings", "true").lower() == "true"
-            max_findings = int(request.args.get("max_findings", 50))
+            page = max(1, int(request.args.get("page", 1)))
+            page_size = min(MAX_PAGE_SIZE, max(1, int(request.args.get("page_size", DEFAULT_PAGE_SIZE))))
 
-            # Perform AI analysis
+            # Perform AI analysis (always, for summary/risk)
             ai_analysis = analyze_scan_results(result_data)
+            total_findings = ai_analysis.get("total_findings", 0)
+            total_pages = max(1, (total_findings + page_size - 1) // page_size)
+
+            # Create toon analysis without raw findings first (for summary)
             toon_analysis = create_toon_analysis_result(
                 result_data, ai_analysis,
-                include_raw_findings=include_findings,
-                max_findings=max_findings
+                include_raw_findings=False,
+                max_findings=0
             )
+
+            # If findings requested, add paginated slice
+            if include_findings and total_findings > 0:
+                from tools.ai_analysis import _extract_findings
+                tool_name = result_data.get("tool_name", "unknown")
+                scan_data = result_data.get("scan_result", {})
+                all_findings = _extract_findings(scan_data, tool_name)
+
+                # Sort by severity
+                severity_order = {"CRITICAL": 0, "HIGH": 1, "ERROR": 1, "MEDIUM": 2, "WARNING": 2, "LOW": 3, "INFO": 4, "UNKNOWN": 5}
+                all_findings.sort(key=lambda f: severity_order.get(f.get("severity", "UNKNOWN"), 5))
+
+                # Apply pagination
+                offset = (page - 1) * page_size
+                page_findings = all_findings[offset: offset + page_size]
+                toon_analysis["findings"] = page_findings
+                toon_analysis["findings_truncated"] = (page < total_pages)
 
             return jsonify({
                 "success": True,
                 "status": "completed",
                 "result_format": "toon-analysis",
-                "toon_result": toon_analysis
+                "toon_result": toon_analysis,
+                "pagination": {
+                    "current_page": page,
+                    "page_size": page_size,
+                    "total_findings": total_findings,
+                    "total_pages": total_pages,
+                    "has_next": page < total_pages,
+                    "has_prev": page > 1
+                }
             })
 
         except FileNotFoundError:
