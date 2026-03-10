@@ -71,7 +71,7 @@ ENABLE_RATE_LIMITING = os.environ.get("ENABLE_RATE_LIMITING", "false").lower() =
 RATE_LIMIT_PER_MINUTE = int(os.environ.get("RATE_LIMIT_PER_MINUTE", 30))
 
 # Tool timeouts
-SEMGREP_TIMEOUT = int(os.environ.get("SEMGREP_TIMEOUT", 600))
+OPENGREP_TIMEOUT = int(os.environ.get("OPENGREP_TIMEOUT", 600))
 BANDIT_TIMEOUT = int(os.environ.get("BANDIT_TIMEOUT", 300))
 TRUFFLEHOG_TIMEOUT = int(os.environ.get("TRUFFLEHOG_TIMEOUT", 600))
 DEPENDENCY_CHECK_TIMEOUT = int(os.environ.get("DEPENDENCY_CHECK_TIMEOUT", 900))
@@ -93,7 +93,7 @@ app = Flask(__name__)
 def get_tool_timeout(tool_name: str) -> int:
     """Get timeout for specific tool"""
     timeout_map = {
-        'semgrep': SEMGREP_TIMEOUT,
+        'opengrep': OPENGREP_TIMEOUT,
         'bandit': BANDIT_TIMEOUT,
         'trufflehog': TRUFFLEHOG_TIMEOUT,
         'dependency-check': DEPENDENCY_CHECK_TIMEOUT,
@@ -293,10 +293,10 @@ def execute_command(command: str, target: str, tool_name: str, cwd: Optional[str
 # SAST TOOL ENDPOINTS
 # ============================================================================
 
-@app.route("/api/sast/semgrep", methods=["POST"])
+@app.route("/api/sast/opengrep", methods=["POST"])
 @require_api_key
-def semgrep():
-    """Execute Semgrep static analysis"""
+def opengrep():
+    """Execute Opengrep static analysis"""
     try:
         params = request.json or {}
         target = params.get("target", ".")
@@ -307,7 +307,7 @@ def semgrep():
         additional_args = params.get("additional_args", "")
 
         # Build command
-        command = f"semgrep scan --config={config_param}"
+        command = f"opengrep scan --config={config_param}"
 
         if lang:
             command += f" --lang={lang}"
@@ -322,7 +322,7 @@ def semgrep():
         command += f" {target}"
 
         # Execute command
-        result = execute_command(command, target, "semgrep")
+        result = execute_command(command, target, "opengrep")
 
         # Try to parse JSON output
         if output_format == "json" and result.get("stdout") and result["success"]:
@@ -337,12 +337,12 @@ def semgrep():
                         severity_counts[sev] = severity_counts.get(sev, 0) + 1
                     result["severity_summary"] = severity_counts
             except json.JSONDecodeError as e:
-                logger.warning(f"Could not parse Semgrep JSON output: {e}")
+                logger.warning(f"Could not parse Opengrep JSON output: {e}")
 
         return jsonify(result)
 
     except Exception as e:
-        logger.error(f"Error in semgrep endpoint: {str(e)}")
+        logger.error(f"Error in opengrep endpoint: {str(e)}")
         logger.error(traceback.format_exc())
         return jsonify({"error": f"Server error: {str(e)}", "success": False}), 500
 
@@ -466,7 +466,7 @@ def simple_comprehensive_scan():
     try:
         params = request.json or {}
         target = params.get("target", ".")
-        tools = params.get("tools", ["semgrep", "bandit", "trufflehog", "safety"])
+        tools = params.get("tools", ["opengrep", "bandit", "trufflehog", "safety"])
 
         results = {}
         start_time = time.time()
@@ -475,9 +475,9 @@ def simple_comprehensive_scan():
         for tool in tools:
             logger.info(f"Running {tool} scan on {target}")
 
-            if tool == "semgrep":
-                command = f"semgrep scan --config=auto --json {target}"
-                result = execute_command(command, target, "semgrep")
+            if tool == "opengrep":
+                command = f"opengrep scan --config=auto --json {target}"
+                result = execute_command(command, target, "opengrep")
 
             elif tool == "bandit":
                 command = f"bandit -r {target} -f json"
@@ -551,7 +551,7 @@ def health_check():
 
     # Essential SAST tools to check
     essential_tools = {
-        "semgrep": "semgrep --version",
+        "opengrep": "opengrep --version",
         "bandit": "bandit --version",
         "safety": "safety --version",
         "python3": "python3 --version"
@@ -619,7 +619,7 @@ if __name__ == "__main__":
 
     logger.info(f"Starting Simple SAST Tools API Server on port {API_PORT}")
     logger.info("Simple version - no external dependencies required")
-    logger.info("Supported tools: Semgrep, Bandit, TruffleHog, Safety")
+    logger.info("Supported tools: Opengrep, Bandit, TruffleHog, Safety")
 
     if API_KEY:
         logger.info("API key authentication enabled")

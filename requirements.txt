@@ -7,7 +7,7 @@
 #   pip install -r requirements.txt
 #
 # For full server functionality, you also need to install SAST tools:
-#   - Semgrep, Bandit, TruffleHog, Gitleaks, etc.
+#   - Opengrep, Bandit, TruffleHog, Gitleaks, etc.
 #   See README.md for complete installation instructions
 # ============================================================================
 
@@ -36,7 +36,7 @@ psutil>=5.9.0
 # Many SAST tools are installed separately (npm, apt, etc.)
 #
 # Uncomment to install Python-based tools:
-# semgrep>=1.52.0
+# opengrep>=1.52.0
 # bandit>=1.7.6
 # safety>=3.0.1
 # checkov>=3.1.34

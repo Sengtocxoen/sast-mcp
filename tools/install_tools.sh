@@ -104,13 +104,13 @@ echo ""
 echo -e "${BLUE}Installing SAST Tools...${NC}"
 echo ""
 
-# Semgrep
-print_status "Installing Semgrep..."
-if ! command_exists semgrep; then
-    python3 -m pip install --upgrade semgrep 2>&1 | grep -v "WARNING" || true
-    print_success "Semgrep installed"
+# Opengrep
+print_status "Installing Opengrep..."
+if ! command_exists opengrep; then
+    python3 -m pip install --upgrade opengrep 2>&1 | grep -v "WARNING" || true
+    print_success "Opengrep installed"
 else
-    print_warning "Semgrep already installed"
+    print_warning "Opengrep already installed"
 fi
 
 # Bandit
@@ -507,7 +507,7 @@ echo -e "${BLUE}=================================${NC}"
 echo ""
 
 TOOLS=(
-    "semgrep"
+    "opengrep"
     "bandit"
     "bearer"
     "graudit"
