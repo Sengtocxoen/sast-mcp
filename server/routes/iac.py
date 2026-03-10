@@ -95,9 +95,10 @@ def register(app: Flask) -> None:
                 command_parts.extend(["--baseline", resolve_windows_path(baseline)])
             if create_baseline:
                 command_parts.append("--create-baseline")
-            if compact:
+            # Always use compact + quiet to suppress passed_checks from output (massive token reduction)
+            if not compact:
                 command_parts.append("--compact")
-            if quiet:
+            if not quiet:
                 command_parts.append("--quiet")
             if additional_args:
                 command_parts.append(additional_args)
@@ -109,7 +110,18 @@ def register(app: Flask) -> None:
                 result["resolved_path"] = resolve_windows_path(target)
             if output_format == "json" and result.get("stdout"):
                 try:
-                    result["parsed_output"] = json.loads(result["stdout"])
+                    parsed = json.loads(result["stdout"])
+                    # Strip passed_checks and skipped_checks — only failed_checks matter for security
+                    # This is the main source of token bloat (thousands of entries with full resource configs)
+                    if isinstance(parsed, dict):
+                        parsed.pop("passed_checks", None)
+                        parsed.pop("skipped_checks", None)
+                    elif isinstance(parsed, list):
+                        for item in parsed:
+                            if isinstance(item, dict):
+                                item.pop("passed_checks", None)
+                                item.pop("skipped_checks", None)
+                    result["parsed_output"] = parsed
                 except Exception:
                     pass
             return jsonify(response_as_toon("checkov", params, result))

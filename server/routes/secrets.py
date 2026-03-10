@@ -7,7 +7,7 @@ from typing import Any, Dict
 
 from flask import Flask, request, jsonify
 
-from config import TRUFFLEHOG_TIMEOUT
+from config import TRUFFLEHOG_TIMEOUT, MAX_TIMEOUT
 from core import execute_command, resolve_windows_path, response_as_toon
 
 logger = logging.getLogger(__name__)
@@ -62,9 +62,12 @@ def register(app: Flask) -> None:
                 command += f" --report-path={report_path}"
             if verbose:
                 command += " -v"
+            # Limit git history depth by default to avoid timeout on large repos (3000+ refs)
+            if "--log-opts" not in (additional_args or ""):
+                command += " --log-opts=--max-count=1000"
             if additional_args:
                 command += f" {additional_args}"
-            result = execute_command(command, timeout=300)
+            result = execute_command(command, timeout=MAX_TIMEOUT)
             result["original_path"] = target
             result["resolved_path"] = resolved
             if report_path and os.path.exists(report_path):

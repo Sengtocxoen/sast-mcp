@@ -71,16 +71,29 @@ def register(app: Flask) -> None:
             production = params.get("production", False)
             additional_args = params.get("additional_args", "")
             resolved = resolve_windows_path(target)
-            command = "npm audit"
-            if json_output:
-                command += " --json"
-            if audit_level:
-                command += f" --audit-level={audit_level}"
-            if production:
-                command += " --production"
+            # Detect pnpm projects (no package-lock.json, but pnpm-lock.yaml exists)
+            use_pnpm = (
+                os.path.exists(os.path.join(resolved, "pnpm-lock.yaml"))
+                and not os.path.exists(os.path.join(resolved, "package-lock.json"))
+            )
+            if use_pnpm:
+                command = "pnpm audit"
+                if json_output:
+                    command += " --json"
+                if audit_level:
+                    command += f" --audit-level={audit_level}"
+            else:
+                command = "npm audit"
+                if json_output:
+                    command += " --json"
+                if audit_level:
+                    command += f" --audit-level={audit_level}"
+                if production:
+                    command += " --production"
             if additional_args:
                 command += f" {additional_args}"
             result = execute_command(command, cwd=resolved, timeout=180)
+            result["package_manager"] = "pnpm" if use_pnpm else "npm"
             result["original_path"] = target
             result["resolved_path"] = resolved
             if json_output and result.get("stdout"):

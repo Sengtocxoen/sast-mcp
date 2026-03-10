@@ -121,10 +121,13 @@ def register(app: Flask) -> None:
         try:
             params = request.json or {}
             target = params.get("target", ".")
-            database = params.get("database", "all")
+            # graudit v4.0 removed the "all" db — default to no -d flag (uses built-in defaults)
+            database = params.get("database", "")
             additional_args = params.get("additional_args", "")
             resolved_target = resolve_windows_path(target)
-            command = f"graudit -d {database}"
+            command = "graudit"
+            if database:
+                command += f" -d {database}"
             if additional_args:
                 command += f" {additional_args}"
             command += f" {resolved_target}"
@@ -175,15 +178,28 @@ def register(app: Flask) -> None:
             severity = params.get("severity", "")
             confidence = params.get("confidence", "")
             additional_args = params.get("additional_args", "")
+            exclude_dirs = params.get("exclude_dirs", "")
             command = f"gosec -fmt={output_format}"
             if severity:
                 command += f" -severity={severity}"
             if confidence:
                 command += f" -confidence={confidence}"
+            if exclude_dirs:
+                command += f" -exclude-dir={exclude_dirs}"
             if additional_args:
                 command += f" {additional_args}"
             command += f" {target}"
             result = execute_command(command, timeout=300)
+            # Detect SSA panic (gosec bug on complex codebases)
+            stderr = result.get("stderr", "")
+            if "panic" in stderr.lower() or "nil pointer dereference" in stderr.lower():
+                result["warnings"] = result.get("warnings", [])
+                result["warnings"].append(
+                    "gosec SSA analyzer panicked on one or more packages (gosec internal bug). "
+                    "Partial results may be available. Use exclude_dirs param to skip problematic packages."
+                )
+                result["partial_results"] = True
+                result["success"] = bool(result.get("stdout"))
             if output_format == "json" and result.get("stdout"):
                 try:
                     result["parsed_output"] = json.loads(result["stdout"])
@@ -278,7 +294,8 @@ def register(app: Flask) -> None:
             output_format = params.get("format", "json")
             fix = params.get("fix", False)
             additional_args = params.get("additional_args", "")
-            command = f"eslint {target} -f {output_format}"
+            # ESLint v9 dropped .eslintrc.* format by default — force legacy config lookup
+            command = f"ESLINT_USE_FLAT_CONFIG=false eslint {target} -f {output_format}"
             if config:
                 command += f" -c {config}"
             if fix:

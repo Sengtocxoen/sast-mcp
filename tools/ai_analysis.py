@@ -490,13 +490,20 @@ def _extract_findings(scan_data: Dict[str, Any], tool_name: str) -> List[Dict[st
             })
 
     elif tool_name == "bearer":
-        results = parsed_output.get("findings", parsed_output.get("results", []))
-        for r in results:
+        raw = parsed_output.get("findings", parsed_output.get("results", []))
+        # bearer can return findings as a dict-of-lists keyed by rule_id
+        if isinstance(raw, dict):
+            all_items = []
+            for items in raw.values():
+                if isinstance(items, list):
+                    all_items.extend(items)
+            raw = all_items
+        for r in (raw if isinstance(raw, list) else []):
             findings.append({
                 "id": r.get("rule_id", r.get("id", "unknown")),
                 "severity": r.get("severity", "UNKNOWN"),
-                "message": r.get("title", r.get("message", ""))[:500],
-                "file": r.get("filename", r.get("file", "")),
+                "message": r.get("title", r.get("description", r.get("message", "")))[:500],
+                "file": r.get("filename", r.get("file", r.get("full_filename", ""))),
                 "line": r.get("line_number", r.get("line", 0)),
             })
 
@@ -544,6 +551,32 @@ def _extract_findings(scan_data: Dict[str, Any], tool_name: str) -> List[Dict[st
                     "service": port.get("service", {}).get("name", "unknown"),
                     "severity": "INFO",
                 })
+
+    elif tool_name == "nodejsscan":
+        # nodejsscan outputs findings as a dict of categories -> list of findings
+        raw_findings = parsed_output.get("findings", {})
+        if isinstance(raw_findings, dict):
+            for category, items in raw_findings.items():
+                if isinstance(items, list):
+                    for r in items:
+                        if isinstance(r, dict):
+                            findings.append({
+                                "id": r.get("title", category),
+                                "severity": r.get("severity", "MEDIUM"),
+                                "message": r.get("description", r.get("title", ""))[:500],
+                                "file": r.get("path", r.get("filename", "")),
+                                "line": r.get("line", 0),
+                            })
+        elif isinstance(raw_findings, list):
+            for r in raw_findings:
+                if isinstance(r, dict):
+                    findings.append({
+                        "id": r.get("title", "unknown"),
+                        "severity": r.get("severity", "MEDIUM"),
+                        "message": r.get("description", "")[:500],
+                        "file": r.get("path", ""),
+                        "line": r.get("line", 0),
+                    })
 
     else:
         # Generic extraction

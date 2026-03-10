@@ -637,6 +637,9 @@ def run_scan_synchronously(tool_name: str, params: Dict[str, Any], scan_function
         return {"success": False, "message": str(e), "job_id": job_id, "job_status": "failed", "error": str(e), "sync_mode": True}
 
 
+MAX_STDOUT_FOR_ANALYSIS = 500_000  # 500KB — cap stdout before toon analysis to avoid OOM on huge outputs
+
+
 def response_as_toon(
     tool_name: str,
     params: Dict[str, Any],
@@ -649,13 +652,22 @@ def response_as_toon(
     Use this so every tool returns a consistent toon_result the AI can save and analyze.
     """
     job_id = f"immediate-{tool_name}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    # Cap stdout to prevent toon analyzer from crashing on huge outputs (e.g. bearer with 1M+ chars)
+    capped_result = result
+    stdout = result.get("stdout", "")
+    if len(stdout) > MAX_STDOUT_FOR_ANALYSIS:
+        capped_result = result.copy()
+        capped_result["stdout"] = stdout[:MAX_STDOUT_FOR_ANALYSIS]
+        capped_result["stdout_truncated"] = True
+        capped_result["stdout_original_size"] = len(stdout)
+        logger.warning(f"{tool_name}: stdout truncated from {len(stdout)} to {MAX_STDOUT_FOR_ANALYSIS} chars for toon analysis")
     full = {
         "job_id": job_id,
         "tool_name": tool_name,
         "scan_params": params,
         "started_at": datetime.now().isoformat(),
         "completed_at": datetime.now().isoformat(),
-        "scan_result": result,
+        "scan_result": capped_result,
     }
     try:
         analysis = analyze_scan_results(full)
@@ -681,5 +693,5 @@ def response_as_toon(
                 "analysis": {"error": str(e), "total_findings": 0, "risk": {"overall_risk": "UNKNOWN"}},
                 "findings": [],
             },
-            "raw_result": result,
+            # raw_result intentionally omitted — it can contain full stdout (megabytes) causing token explosion
         }
