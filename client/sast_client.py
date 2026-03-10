@@ -9,7 +9,7 @@ Features Rich terminal UI with progress bars, job tracking, and server monitorin
 Usage:
     python sast_client.py --base-path F:\\work\\Resola
     python sast_client.py --project F:\\work\\Resola\\mp-api
-    python sast_client.py --base-path F:\\work\\Resola --tools semgrep,bandit
+    python sast_client.py --base-path F:\\work\\Resola --tools opengrep,bandit
     python sast_client.py --help
 
 Author: Security Team  
@@ -118,7 +118,7 @@ def submit_scan(project_path: str, tool: str) -> Optional[str]:
     
     Args:
         project_path: Windows path to project (e.g., 'F:/work/Resola/mp-api')
-        tool: Tool name (e.g., 'semgrep', 'bandit')
+        tool: Tool name (e.g., 'opengrep', 'bandit')
         
     Returns:
         Job ID if successful, None otherwise
@@ -553,7 +553,7 @@ Examples:
   python sast_client.py --project F:\\work\\Resola\\mp-api
   
   # Use specific tools
-  python sast_client.py --base-path F:\\work\\Resola --tools semgrep,bandit
+  python sast_client.py --base-path F:\\work\\Resola --tools opengrep,bandit
   
   # Dry run (preview projects)
   python sast_client.py --base-path F:\\work\\Resola --dry-run

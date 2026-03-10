@@ -1,5 +1,5 @@
 """
-SAST tool endpoints: Semgrep, Bearer, Graudit, Bandit, Gosec, Brakeman, NodeJSScan, ESLint.
+SAST tool endpoints: Opengrep, Bearer, Graudit, Bandit, Gosec, Brakeman, NodeJSScan, ESLint.
 Edit this file to fix or tune any of these tools.
 """
 import json
@@ -12,7 +12,7 @@ from flask import Flask, request, jsonify
 from config import (
     BANDIT_TIMEOUT,
     FORCE_SYNC_SCANS,
-    SEMGREP_TIMEOUT,
+    OPENGREP_TIMEOUT,
 )
 from core import (
     execute_command,
@@ -25,7 +25,7 @@ from core import (
 logger = logging.getLogger(__name__)
 
 
-def _semgrep_scan(params: Dict[str, Any]) -> Dict[str, Any]:
+def _opengrep_scan(params: Dict[str, Any]) -> Dict[str, Any]:
     target = params.get("target", ".")
     config = params.get("config", "auto")
     lang = params.get("lang", "")
@@ -33,7 +33,7 @@ def _semgrep_scan(params: Dict[str, Any]) -> Dict[str, Any]:
     output_format = params.get("output_format", "json")
     additional_args = params.get("additional_args", "")
     resolved_target = resolve_windows_path(target)
-    command = f"semgrep scan --config={config}"
+    command = f"opengrep scan --config={config}"
     if lang:
         command += f" --lang={lang}"
     if severity:
@@ -42,11 +42,11 @@ def _semgrep_scan(params: Dict[str, Any]) -> Dict[str, Any]:
     if additional_args:
         command += f" {additional_args}"
     command += f" {resolved_target}"
-    result = execute_command(command, timeout=SEMGREP_TIMEOUT)
+    result = execute_command(command, timeout=OPENGREP_TIMEOUT)
     result["original_path"] = target
     result["resolved_path"] = resolved_target
     if result.get("return_code", 0) != 0 or not result.get("stdout"):
-        result["error"] = result.get("stderr", "semgrep failed with no output")
+        result["error"] = result.get("stderr", "opengrep failed with no output")
         result["summary"] = {}
         return result
     summary = {}
@@ -65,19 +65,19 @@ def _semgrep_scan(params: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def register(app: Flask) -> None:
-    @app.route("/api/sast/semgrep", methods=["POST"])
-    def semgrep():
+    @app.route("/api/sast/opengrep", methods=["POST"])
+    def opengrep():
         try:
             params = request.json or {}
             force_sync = params.get("force_sync", False)
             background = params.get("background", not FORCE_SYNC_SCANS)
             if FORCE_SYNC_SCANS or force_sync or not background:
-                result = run_scan_synchronously("semgrep", params, _semgrep_scan)
+                result = run_scan_synchronously("opengrep", params, _opengrep_scan)
                 return jsonify(result)
-            result = run_scan_in_background("semgrep", params, _semgrep_scan)
+            result = run_scan_in_background("opengrep", params, _opengrep_scan)
             return jsonify(result)
         except Exception as e:
-            logger.error(f"semgrep: {e}\n{traceback.format_exc()}")
+            logger.error(f"opengrep: {e}\n{traceback.format_exc()}")
             return jsonify({"error": str(e)}), 500
 
     @app.route("/api/sast/bearer", methods=["POST"])

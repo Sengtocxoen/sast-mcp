@@ -196,7 +196,7 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
     # ========================================================================
 
     @mcp.tool()
-    async def semgrep_scan(
+    async def opengrep_scan(
         target: str = ".",
         config: str = "auto",
         lang: str = "",
@@ -207,14 +207,14 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
         additional_args: str = ""
     ) -> Dict[str, Any]:
         """
-        Execute Semgrep static analysis for finding security vulnerabilities and code issues.
-        Semgrep supports 30+ languages including Python, JavaScript, Java, Go, Ruby, PHP, etc.
+        Execute Opengrep static analysis for finding security vulnerabilities and code issues.
+        Opengrep supports 30+ languages including Python, JavaScript, Java, Go, Ruby, PHP, etc.
 
         This tool now runs with async/await for better performance and uses maximum accuracy by default.
 
         Args:
             target: Path to code directory or file to scan (default: current directory)
-            config: Semgrep ruleset to use:
+            config: Opengrep ruleset to use:
                    - "auto" (default): Automatically detect and use appropriate rules
                    - "p/security-audit": General security audit
                    - "p/owasp-top-ten": OWASP Top 10 vulnerabilities
@@ -230,7 +230,7 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
                         If provided, full results are saved to file and only summary is returned
                         to avoid token limits.
             max_accuracy: Enable maximum accuracy mode - slower but more thorough (default: True)
-            additional_args: Additional Semgrep command-line arguments
+            additional_args: Additional Opengrep command-line arguments
 
         Returns:
             Scan results with identified security issues and code quality problems.
@@ -252,7 +252,7 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             "output_file": output_file,
             "additional_args": combined_args
         }
-        return await sast_client.safe_post("api/sast/semgrep", data)
+        return await sast_client.safe_post("api/sast/opengrep", data)
 
     @mcp.tool()
     async def bearer_scan(

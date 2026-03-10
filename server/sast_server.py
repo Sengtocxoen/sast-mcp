@@ -68,7 +68,7 @@ if __name__ == "__main__":
     port = args.port
 
     logger.info("Starting SAST Tools API Server on port %s", port)
-    logger.info("SAST: Semgrep, Bearer, Graudit, Bandit, Gosec, Brakeman, NodeJSScan, ESLint")
+    logger.info("SAST: Opengrep, Bearer, Graudit, Bandit, Gosec, Brakeman, NodeJSScan, ESLint")
     logger.info("Secrets: TruffleHog, Gitleaks | Deps: Safety, npm audit, Dependency-Check, Snyk")
     logger.info("IaC: Checkov, tfsec | Container: Trivy | Kali: Nikto, Nmap, SQLMap, WPScan, DIRB, Lynis, ClamAV")
     if FORCE_SYNC_SCANS:

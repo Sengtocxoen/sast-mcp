@@ -59,7 +59,7 @@ SEVERITY_WEIGHTS = {
 
 # Known false-positive patterns by tool
 FALSE_POSITIVE_PATTERNS = {
-    "semgrep": [
+    "opengrep": [
         {"pattern": "test", "field": "path", "reason": "Test files often contain intentional vulnerable patterns"},
         {"pattern": "example", "field": "path", "reason": "Example files may contain intentional samples"},
         {"pattern": "mock", "field": "path", "reason": "Mock files often simulate vulnerabilities"},
@@ -299,7 +299,7 @@ def summarize_findings(scan_results: Dict[str, Any]) -> Dict[str, Any]:
         }
 
         # Tool-specific enrichments
-        if tool_name == "semgrep":
+        if tool_name == "opengrep":
             parsed = scan_result.get("parsed_output", {})
             summary["errors"] = len(parsed.get("errors", []))
             # Unique rule IDs
@@ -443,7 +443,7 @@ def _extract_findings(scan_data: Dict[str, Any], tool_name: str) -> List[Dict[st
     findings = []
     parsed_output = scan_data.get("parsed_output", {})
 
-    if tool_name == "semgrep":
+    if tool_name == "opengrep":
         for r in parsed_output.get("results", []):
             findings.append({
                 "id": r.get("check_id", "unknown"),

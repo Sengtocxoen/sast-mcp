@@ -231,7 +231,7 @@ def register(app: Flask) -> None:
                     "targets": found_files.get("docker", []),
                 }
             scan_recommendations["universal"] = {
-                "tools": ["semgrep", "trufflehog", "gitleaks"],
+                "tools": ["opengrep", "trufflehog", "gitleaks"],
                 "targets": [resolved_path],
             }
 

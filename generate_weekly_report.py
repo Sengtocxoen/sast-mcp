@@ -67,11 +67,11 @@ class ScanResults:
 # PARSER FUNCTIONS (One for each scanner type)
 # ============================================================================
 
-def parse_semgrep_results(file_path: Path, project_name: str, results: ScanResults):
+def parse_opengrep_results(file_path: Path, project_name: str, results: ScanResults):
     """
-    Parse Semgrep JSON output.
-    
-    Semgrep structure:
+    Parse Opengrep JSON output.
+
+    Opengrep structure:
     {
         "results": [
             {
@@ -120,11 +120,11 @@ def parse_semgrep_results(file_path: Path, project_name: str, results: ScanResul
                     'file': finding.get('path', 'unknown'),
                     'line': finding.get('start', {}).get('line', 0),
                     'cwe': cwes,
-                    'scanner': 'Semgrep'
+                    'scanner': 'Opengrep'
                 })
     
     except Exception as e:
-        print(f"⚠ Error parsing Semgrep results for {project_name}: {e}")
+        print(f"⚠ Error parsing Opengrep results for {project_name}: {e}")
 
 
 def parse_bandit_results(file_path: Path, project_name: str, results: ScanResults):
@@ -357,8 +357,8 @@ def process_scan_directory(scan_dir: Path) -> ScanResults:
             print(f"  📄 {folder}/{json_file.name}")
             
             # Route to appropriate parser
-            if scanner_type == 'semgrep':
-                parse_semgrep_results(json_file, f"{folder}/{project_name}", results)
+            if scanner_type == 'opengrep':
+                parse_opengrep_results(json_file, f"{folder}/{project_name}", results)
             elif scanner_type == 'bandit':
                 parse_bandit_results(json_file, f"{folder}/{project_name}", results)
             elif scanner_type == 'trufflehog':

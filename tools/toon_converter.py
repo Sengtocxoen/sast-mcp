@@ -110,7 +110,7 @@ def convert_scan_result_to_toon(scan_result: Dict[str, Any]) -> Optional[str]:
     Example:
         scan_result = {
             "job_id": "abc-123",
-            "tool_name": "semgrep",
+            "tool_name": "opengrep",
             "scan_result": {
                 "results": [...],
                 "errors": [...]
@@ -287,8 +287,8 @@ def create_ai_compact_format(
     findings = []
     parsed_output = scan_data.get("parsed_output", {})
 
-    if tool_name == "semgrep":
-        findings = _extract_semgrep_findings(parsed_output)
+    if tool_name == "opengrep":
+        findings = _extract_opengrep_findings(parsed_output)
         compact["errors_count"] = len(parsed_output.get("errors", []))
 
     elif tool_name == "bandit":
@@ -333,8 +333,8 @@ def create_ai_compact_format(
     return compact
 
 
-def _extract_semgrep_findings(parsed_output: Dict[str, Any]) -> list:
-    """Extract compact findings from Semgrep output."""
+def _extract_opengrep_findings(parsed_output: Dict[str, Any]) -> list:
+    """Extract compact findings from Opengrep output."""
     findings = []
     results = parsed_output.get("results", [])
 
