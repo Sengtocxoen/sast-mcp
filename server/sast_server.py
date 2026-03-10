@@ -11,19 +11,37 @@ import logging
 import os
 import sys
 
-# Ensure "server" package is found: run from project root (e.g. python3 server/sast_server.py)
-# Python adds the script's dir (server/) to sys.path, which breaks "import server.config"
+# Ensure "server" package is found whether run as "python3 server/sast_server.py" or "python3 sast_server.py" (from server/)
 _file = os.path.realpath(os.path.abspath(__file__))
 _script_dir = os.path.dirname(_file)
 _PROJECT_ROOT = os.path.dirname(_script_dir)
-# Remove script dir from path so it doesn't shadow the server package
+
 def _norm(p):
     try:
-        return os.path.realpath(p) if p and os.path.isdir(p) else None
+        if not p:
+            return None
+        r = os.path.realpath(os.path.abspath(p))
+        return r if os.path.isdir(r) else None
     except Exception:
         return None
-sys.path = [p for p in sys.path if _norm(p) != _script_dir]
-if _PROJECT_ROOT not in sys.path:
+
+# If script was run as "sast_server.py" from server/, __file__ can make _PROJECT_ROOT wrong; use cwd
+_root_norm = _norm(_PROJECT_ROOT)
+if not _root_norm:
+    _cwd = _norm(os.getcwd())
+    # If we're in server/, project root is parent
+    if _cwd and os.path.basename(_cwd) == "server":
+        _PROJECT_ROOT = os.path.dirname(_cwd)
+    else:
+        _PROJECT_ROOT = _cwd or os.getcwd()
+    _root_norm = _norm(_PROJECT_ROOT)
+_script_dir_norm = _norm(_script_dir)
+
+# Remove script dir so it doesn't shadow the "server" package
+sys.path = [p for p in sys.path if _norm(p) != _script_dir_norm]
+
+# Ensure project root is first so "import server.config" resolves to server/ under project root
+if _root_norm and (_root_norm not in {_norm(p) for p in sys.path}):
     sys.path.insert(0, _PROJECT_ROOT)
 os.chdir(_PROJECT_ROOT)
 
