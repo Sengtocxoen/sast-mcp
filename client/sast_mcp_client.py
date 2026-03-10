@@ -508,6 +508,32 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
         }
         return await sast_client.safe_post("api/sast/eslint-security", data)
 
+    @mcp.tool()
+    async def nodejsscan_scan(
+        target: str = ".",
+        output_file: str = "",
+        additional_args: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Execute NodeJSScan Node.js security scanner for JavaScript/Node.js applications.
+        Static analysis tool for Node.js security vulnerabilities.
+
+        Args:
+            target: Path to Node.js code directory to scan (default: current directory)
+            output_file: Path to save scan results (optional). If provided, full results
+                         are saved to file and only summary is returned to avoid token limits.
+            additional_args: Additional NodeJSScan command-line arguments
+
+        Returns:
+            Node.js security findings and vulnerability report
+        """
+        data = {
+            "target": target,
+            "output_file": output_file,
+            "additional_args": additional_args
+        }
+        return await sast_client.safe_post("api/sast/nodejsscan", data)
+
     # ========================================================================
     # SECRET SCANNING
     # ========================================================================
@@ -1185,6 +1211,23 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
         return await sast_client.safe_get("api/util/scan-stats")
 
     @mcp.tool()
+    async def get_detailed_scan_statistics() -> Dict[str, Any]:
+        """
+        Get detailed scan statistics and system health from the server.
+        Includes process health, job counts by status, success/failure rates,
+        and multi-process backend configuration.
+
+        Returns:
+            Detailed statistics including:
+            - scan_statistics: Active, completed, failed, retried counts
+            - metrics: Success rate, retry rate, failure rate (percent)
+            - job_statistics: Total jobs and breakdown by status
+            - process_health: Worker process health info
+            - system_info: Multiprocessing config, max workers, etc.
+        """
+        return await sast_client.safe_get("api/scan/statistics")
+
+    @mcp.tool()
     async def sast_server_health() -> Dict[str, Any]:
         """
         Check the health status of the SAST Tools server.
@@ -1256,6 +1299,31 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
         if status_filter:
             endpoint += f"&status={status_filter}"
         return await sast_client.safe_get(endpoint)
+
+    @mcp.tool()
+    async def cancel_scan_job(job_id: str) -> Dict[str, Any]:
+        """
+        Cancel a running or pending scan job.
+
+        Args:
+            job_id: Job ID returned from a background scan request
+
+        Returns:
+            Success or failure message. Jobs that are already completed or failed
+            cannot be cancelled.
+        """
+        return await sast_client.safe_post(f"api/jobs/{job_id}/cancel", {})
+
+    @mcp.tool()
+    async def cleanup_scan_jobs() -> Dict[str, Any]:
+        """
+        Clean up old completed/failed/cancelled jobs from the server.
+        Frees disk space and keeps the job list manageable.
+
+        Returns:
+            Message with the number of jobs cleaned up
+        """
+        return await sast_client.safe_post("api/jobs/cleanup", {})
 
     @mcp.tool()
     async def execute_custom_sast_command(command: str, cwd: str = "", timeout: int = 300) -> Dict[str, Any]:
@@ -1369,6 +1437,22 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             "custom_prompt": custom_prompt if custom_prompt else None
         }
         return await sast_client.safe_post("api/analysis/ai-summary", data)
+
+    @mcp.tool()
+    async def summarize_scan_results(job_id: str) -> Dict[str, Any]:
+        """
+        Generate a statistical summary of completed scan results (no AI required).
+        Lightweight summary with counts and severity breakdown; use when you do
+        not need AI-powered analysis.
+
+        Args:
+            job_id: Job ID of a completed scan to summarize
+
+        Returns:
+            Statistical summary with finding counts, severity breakdown, and
+            basic metrics. Does not require AI service to be configured.
+        """
+        return await sast_client.safe_post("api/analysis/summarize", {"job_id": job_id})
 
     @mcp.tool()
     async def get_toon_ai_status() -> Dict[str, Any]:

@@ -731,39 +731,20 @@ This will block until the scan completes (not recommended for long-running scans
 
 ```
 sast-mcp/
-├── client/
-│   └── sast_mcp_client.py      # MCP client for Claude Code integration
+├── client/              # MCP client (sast_mcp_client.py)
 ├── server/
-│   ├── sast_server.py          # Full-featured SAST server (recommended)
-│   └── simple_sast_server.py   # Lightweight alternative (minimal dependencies)
-├── tools/
-│   ├── install_tools.sh        # Automated security tools installation script
-│   ├── toon_converter.py       # TOON format converter for LLM optimization
-│   └── ai_analysis.py          # AI analysis utilities (future feature)
-├── requirements.txt            # Python dependencies
-├── .env.example                # Server configuration template
-├── config.example.json         # Claude Code configuration examples
-├── LICENSE                     # MIT License
-└── README.md                   # This documentation
+│   ├── config.py        # All env/timeouts in one place
+│   ├── sast_server.py   # Full-featured server
+│   └── simple_sast_server.py  # Lightweight alternative
+├── tools/               # install_tools.sh, toon_converter.py, ai_analysis.py
+├── README.md            # This file
+├── DOCS.md              # Detailed docs (health, parallel, multiprocess, Kali setup)
+├── requirements.txt
+├── .env.example
+└── config.example.json
 ```
 
-### Simple & Clean Architecture
-
-**client/** - MCP client that connects Claude Code to the SAST server via HTTP
-
-**server/** - Two server options:
-- `sast_server.py` - Full-featured with TOON conversion and all features
-- `simple_sast_server.py` - Minimal dependencies, basic functionality
-
-**tools/** - Utilities and installation scripts:
-- `install_tools.sh` - Automated installation of all 23+ security tools
-- `toon_converter.py` - TOON format converter (30-60% token reduction)
-- `ai_analysis.py` - AI-powered scan analysis (coming soon)
-
-**Configuration files:**
-- `requirements.txt` - Python package dependencies
-- `.env.example` - Server environment configuration template
-- `config.example.json` - Claude Code MCP configuration examples
+**Detailed documentation** (parallel scanning, multiprocess backend, async client, Kali/Windows setup, tool health): see **DOCS.md**.
 
 ## Troubleshooting
 
