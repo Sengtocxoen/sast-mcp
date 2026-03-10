@@ -2,9 +2,13 @@
 """
 MCP-SAST-Server - Security Analysis Server for Claude Code
 
-Run from project root: python -m server.sast_server [--port 6000] [--debug]
-Or: python server/sast_server.py  (from project root)
-Config: server/config.py  |  Routes: server/routes/*.py  |  Core: server/core.py
+Run from project root:
+  python -m server.sast_server [--port 6000] [--debug]   <- recommended (always finds server package)
+  python run_server.py [--port 6000] [--debug]           <- same, via launcher
+  python server/sast_server.py ...                       <- may fail with "No module named 'server.config'" on some systems
+
+The error "No module named 'server.config'" means Python cannot find the server PACKAGE (the server/
+folder), not that config.py is broken. Fix: run with -m or run_server.py from project root.
 """
 import argparse
 import logging
