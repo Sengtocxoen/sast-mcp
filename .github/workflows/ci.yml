@@ -1,0 +1,68 @@
+name: CI – Lint & Scan
+
+on:
+  push:
+    branches-ignore: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  # ── Lint ──────────────────────────────────────────────────────────────────
+  lint:
+    name: "Python lint"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install deps
+        run: pip install -r requirements.txt flake8
+
+      - name: flake8
+        run: |
+          flake8 server/ client/ tools/ \
+            --max-line-length=120 \
+            --extend-ignore=E501,W503 \
+            --exclude=__pycache__
+
+  # ── Dependency CVEs ───────────────────────────────────────────────────────
+  dep-scan:
+    name: "pip-audit (deps)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: pip-audit
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.txt --format=json --output=/tmp/pip-audit.json || true
+          pip-audit -r requirements.txt || true
+
+  # ── SAST (non-blocking) ───────────────────────────────────────────────────
+  sast:
+    name: "Semgrep SAST (non-blocking)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: TruffleHog – secret scan
+        uses: trufflesecurity/trufflehog@main
+        with:
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+        continue-on-error: true
+
+      - name: Semgrep – SAST
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: "p/python p/secrets p/security-audit"
+        continue-on-error: true

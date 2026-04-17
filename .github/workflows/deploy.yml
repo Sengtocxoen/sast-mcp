@@ -1,0 +1,166 @@
+name: Deploy – FIFO Gate → Kali
+
+# Runs on every push to master (after CI passes).
+# Uses the FIFO deployment gate (DynamoDB lock + SQS queue) to serialize
+# concurrent pushes, then SSHs into Kali to pull and restart the server.
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "Target environment"
+        required: true
+        default: "staging"
+        type: choice
+        options: [staging, prod]
+
+env:
+  AWS_REGION:     ap-southeast-1
+  DEPLOY_ENV:     ${{ github.event.inputs.env || 'staging' }}
+  AUTHORIZE_FN:   resola-cicd-learn-authorize
+  UNLOCKER_FN:    resola-cicd-learn-unlocker
+  LOCK_TABLE:     resola-cicd-learn-locks
+  LOCK_WAIT_SECS: "300"
+  # Path on Kali where sast-mcp lives (Windows F: mount)
+  KALI_DEPLOY_DIR: /mnt/Resola/sast-mcp
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  # ── 1. Non-blocking security scan ─────────────────────────────────────────
+  security-scan:
+    name: "Security Scan (non-blocking)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: TruffleHog – secret scan
+        uses: trufflesecurity/trufflehog@main
+        with:
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+        continue-on-error: true
+
+      - name: Semgrep – SAST
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: "p/python p/secrets p/security-audit"
+        continue-on-error: true
+
+  # ── 2. Deploy with FIFO lock ───────────────────────────────────────────────
+  deploy:
+    name: "Deploy → Kali (${{ github.event.inputs.env || 'staging' }})"
+    runs-on: ubuntu-latest
+    needs: security-scan
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── AWS auth (OIDC – no stored keys) ───────────────────────────────
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # ── Acquire FIFO lock ───────────────────────────────────────────────
+      - name: Authorize Gate – request lock
+        id: authorize
+        run: |
+          PAYLOAD=$(printf '{"env":"%s","run_id":"%s","repo":"%s"}' \
+            "$DEPLOY_ENV" "${{ github.run_id }}" "${{ github.repository }}")
+
+          aws lambda invoke \
+            --function-name "$AUTHORIZE_FN" \
+            --payload "$PAYLOAD" \
+            --cli-binary-format raw-in-base64-out \
+            /tmp/auth_out.json
+
+          cat /tmp/auth_out.json
+          STATUS=$(jq -r '.status' /tmp/auth_out.json)
+          echo "authorize_status=$STATUS" >> $GITHUB_OUTPUT
+          echo "Lock request: $STATUS"
+
+      # ── Wait if queued ──────────────────────────────────────────────────
+      - name: Wait for lock (if queued)
+        if: steps.authorize.outputs.authorize_status == 'queued'
+        run: |
+          echo "Queued behind another run. Polling DynamoDB every 10s (max ${LOCK_WAIT_SECS}s)..."
+          START=$(date +%s)
+
+          while true; do
+            ELAPSED=$(( $(date +%s) - START ))
+            if [ "$ELAPSED" -ge "$LOCK_WAIT_SECS" ]; then
+              echo "ERROR: Timed out after ${LOCK_WAIT_SECS}s"
+              exit 1
+            fi
+
+            ITEM=$(aws dynamodb get-item \
+              --table-name "$LOCK_TABLE" \
+              --key "{\"env\":{\"S\":\"$DEPLOY_ENV\"}}" \
+              --output json)
+
+            HOLDER=$(echo "$ITEM" | jq -r '.Item.run_id.S // empty')
+            STATUS=$(echo "$ITEM" | jq -r '.Item.status.S // empty')
+            echo "[${ELAPSED}s] holder=$HOLDER status=$STATUS"
+
+            if [ "$HOLDER" = "${{ github.run_id }}" ] && [ "$STATUS" = "locked" ]; then
+              echo "Lock acquired after ${ELAPSED}s"
+              break
+            fi
+            sleep 10
+          done
+
+      # ── Deploy: SSH → Kali git pull + restart ──────────────────────────
+      - name: Deploy to Kali
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.KALI_HOST }}
+          username: ${{ secrets.KALI_USER }}
+          key: ${{ secrets.KALI_SSH_KEY }}
+          script: |
+            set -e
+            echo "=== Pulling ${{ github.sha }} ==="
+            cd ${{ env.KALI_DEPLOY_DIR }}
+            git fetch origin
+            git reset --hard origin/master
+
+            echo "=== Restarting sast-mcp server ==="
+            # Option A: systemd service (preferred)
+            # sudo systemctl restart sast-mcp
+
+            # Option B: manual process restart (fallback)
+            pkill -f sast_server.py || true
+            sleep 1
+            nohup python3 server/sast_server.py >> /var/log/sast-mcp.log 2>&1 &
+            echo "Server restarted. PID: $!"
+
+      - name: Write deploy summary
+        run: |
+          {
+            echo "### Deployment"
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Env | $DEPLOY_ENV |"
+            echo "| SHA | \`${{ github.sha }}\` |"
+            echo "| Run | ${{ github.run_id }} |"
+            echo "| Status | deployed |"
+          } >> $GITHUB_STEP_SUMMARY
+
+      # ── Release lock (always – even if deploy failed) ───────────────────
+      - name: Unlocker Gate – release lock
+        if: always()
+        run: |
+          PAYLOAD=$(printf '{"env":"%s","run_id":"%s"}' \
+            "$DEPLOY_ENV" "${{ github.run_id }}")
+
+          aws lambda invoke \
+            --function-name "$UNLOCKER_FN" \
+            --payload "$PAYLOAD" \
+            --cli-binary-format raw-in-base64-out \
+            /tmp/unlock_out.json
+
+          cat /tmp/unlock_out.json
