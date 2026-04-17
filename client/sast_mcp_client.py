@@ -139,14 +139,17 @@ class SASTToolsClient:
         """
         url = f"{self.server_url}/{endpoint}"
 
-        # Force background mode for all scan endpoints to avoid token limit issues
-        # This ensures scans run in background and return simple job_id instead of full results
-        if any(pattern in endpoint for pattern in ['api/sast/', 'api/secrets/', 'api/dependencies/',
-                                                      'api/iac/', 'api/container/', 'api/web/',
-                                                      'api/network/', 'api/system/', 'api/malware/']):
-            if "background" not in json_data:
+        # Default to background mode for scan endpoints when the caller hasn't set a preference.
+        # We do NOT force it unconditionally: when the server runs FORCE_SYNC_SCANS=1 it
+        # returns compact toon-analysis, so the caller can pass force_sync=True to get
+        # inline results without an extra poll round-trip.
+        SCAN_PREFIXES = ('api/sast/', 'api/secrets/', 'api/dependencies/',
+                         'api/iac/', 'api/container/', 'api/web/',
+                         'api/network/', 'api/system/', 'api/malware/')
+        if any(endpoint.startswith(p) for p in SCAN_PREFIXES):
+            if "background" not in json_data and "force_sync" not in json_data:
                 json_data["background"] = True
-                logger.info(f"Background mode enabled for {endpoint} to reduce token consumption")
+                logger.info(f"Background mode defaulted for {endpoint} (pass force_sync=True for inline results)")
 
         try:
             logger.debug(f"POST {url} with data: {json_data}")

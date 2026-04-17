@@ -20,10 +20,11 @@ sys.path.insert(0, _server_dir)
 os.chdir(_project_root)
 
 from flask import Flask
+from flask_cors import CORS
 
 # Import config/routes; fallback to direct load if path still wrong (e.g. some Linux envs).
 try:
-    from config import API_PORT, DEBUG_MODE, FORCE_SYNC_SCANS
+    from config import API_PORT, DEBUG_MODE, FORCE_SYNC_SCANS, CORS_ORIGINS
     from routes import register_all
 except ModuleNotFoundError:
     import importlib.util
@@ -35,6 +36,7 @@ except ModuleNotFoundError:
     API_PORT = _config.API_PORT
     DEBUG_MODE = _config.DEBUG_MODE
     FORCE_SYNC_SCANS = _config.FORCE_SYNC_SCANS
+    CORS_ORIGINS = _config.CORS_ORIGINS
     _routes_path = os.path.join(_server_dir, "routes", "__init__.py")
     _rspec = importlib.util.spec_from_file_location("routes", _routes_path, submodule_search_locations=[os.path.join(_server_dir, "routes")])
     _routes = importlib.util.module_from_spec(_rspec)
@@ -50,6 +52,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+# Allow the local dashboard (and any other origin in CORS_ORIGINS) to call this API
+# from the browser. Required for future direct API integration.
+origins = [o.strip() for o in CORS_ORIGINS.split(",") if o.strip()]
+CORS(app, origins=origins, supports_credentials=False)
 register_all(app)
 
 

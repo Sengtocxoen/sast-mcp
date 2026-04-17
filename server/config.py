@@ -38,6 +38,15 @@ DEPENDENCY_CHECK_PATH = os.environ.get("DEPENDENCY_CHECK_PATH", "dependency-chec
 MOUNT_POINT = os.environ.get("MOUNT_POINT", "/mnt/work")
 WINDOWS_BASE = os.environ.get("WINDOWS_BASE", "F:/work")
 
+# Dashboard integration: where semgrep.json / bandit.json land per project
+# Mirrors F:/Resola/Security/sast-results on Windows
+SAST_RESULTS_DIR = os.environ.get("SAST_RESULTS_DIR", "/mnt/Resola/Security/sast-results")
+# Root of all source repos (mirrors F:/Resola on Windows: Deca/ and IPS/ live here)
+RESOLA_SRC_DIR = os.environ.get("RESOLA_SRC_DIR", "/mnt/Resola")
+
+# CORS: allow the local dashboard (port 8787) to call this API from the browser
+CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "http://localhost:8787,http://127.0.0.1:8787")
+
 # Jobs
 DEFAULT_OUTPUT_DIR = os.environ.get("DEFAULT_OUTPUT_DIR", "/var/sast-mcp/scan-results")
 MAX_WORKERS = int(os.environ.get("MAX_WORKERS", 10))

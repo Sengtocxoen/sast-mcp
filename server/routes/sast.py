@@ -4,6 +4,7 @@ Edit this file to fix or tune any of these tools.
 """
 import json
 import logging
+import shlex
 import traceback
 from typing import Any, Dict
 
@@ -17,10 +18,22 @@ from config import (
 from core import (
     execute_command,
     resolve_windows_path,
+    validate_scan_target,
     run_scan_in_background,
     run_scan_synchronously,
     response_as_toon,
 )
+
+
+def _safe_args(additional_args: str) -> str:
+    """Split additional_args and re-quote each token to prevent shell injection."""
+    if not additional_args:
+        return ""
+    try:
+        tokens = shlex.split(additional_args)
+    except ValueError:
+        tokens = additional_args.split()
+    return " ".join(shlex.quote(t) for t in tokens)
 
 logger = logging.getLogger(__name__)
 
@@ -32,20 +45,25 @@ def _opengrep_scan(params: Dict[str, Any]) -> Dict[str, Any]:
     severity = params.get("severity", "")
     output_format = params.get("output_format", "json")
     additional_args = params.get("additional_args", "")
-    resolved_target = resolve_windows_path(target)
-    command = f"opengrep scan --config={config}"
+    resolved_target = validate_scan_target(target)
+    command = f"opengrep scan --config={shlex.quote(config)}"
     if lang:
-        command += f" --lang={lang}"
+        command += f" --lang={shlex.quote(lang)}"
     if severity:
-        command += f" --severity={severity}"
-    command += f" --{output_format}"
+        command += f" --severity={shlex.quote(severity)}"
+    command += f" --{shlex.quote(output_format)}"
     if additional_args:
-        command += f" {additional_args}"
-    command += f" {resolved_target}"
+        command += f" {_safe_args(additional_args)}"
+    command += f" {shlex.quote(resolved_target)}"
     result = execute_command(command, timeout=OPENGREP_TIMEOUT)
     result["original_path"] = target
     result["resolved_path"] = resolved_target
-    if result.get("return_code", 0) != 0 or not result.get("stdout"):
+    # Opengrep/Semgrep exit codes:
+    #   0 = no findings
+    #   1 = findings found (success — NOT an error)
+    #   2 = fatal error (bad config, crash, etc.)
+    return_code = result.get("return_code", 0)
+    if return_code == 2 or (return_code not in (0, 1) and not result.get("stdout")):
         result["error"] = result.get("stderr", "opengrep failed with no output")
         result["summary"] = {}
         return result
@@ -56,8 +74,13 @@ def _opengrep_scan(params: Dict[str, Any]) -> Dict[str, Any]:
             result["parsed_output"] = parsed
             if "results" in parsed:
                 summary["total_findings"] = len(parsed["results"])
+            # "errors" in opengrep JSON are parse warnings (files it couldn't analyze),
+            # not tool failures. Surface as a warning count, not as an error.
             if "errors" in parsed:
-                summary["total_errors"] = len(parsed["errors"])
+                parse_errors = parsed["errors"]
+                summary["total_parse_warnings"] = len(parse_errors)
+                if parse_errors:
+                    result["parse_warnings"] = parse_errors
         except Exception:
             pass
     result["summary"] = summary
@@ -76,6 +99,8 @@ def register(app: Flask) -> None:
                 return jsonify(result)
             result = run_scan_in_background("opengrep", params, _opengrep_scan)
             return jsonify(result)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
         except Exception as e:
             logger.error(f"opengrep: {e}\n{traceback.format_exc()}")
             return jsonify({"error": str(e)}), 500
@@ -90,18 +115,18 @@ def register(app: Flask) -> None:
             only_policy = params.get("only_policy", "")
             severity = params.get("severity", "")
             additional_args = params.get("additional_args", "")
-            resolved_target = resolve_windows_path(target)
-            command = f"bearer scan {resolved_target} --quiet"
+            resolved_target = validate_scan_target(target)
+            command = f"bearer scan {shlex.quote(resolved_target)} --quiet"
             if scanner:
-                command += f" --scanner={scanner}"
+                command += f" --scanner={shlex.quote(scanner)}"
             if output_format:
-                command += f" --format={output_format}"
+                command += f" --format={shlex.quote(output_format)}"
             if only_policy:
-                command += f" --only-policy={only_policy}"
+                command += f" --only-policy={shlex.quote(only_policy)}"
             if severity:
-                command += f" --severity={severity}"
+                command += f" --severity={shlex.quote(severity)}"
             if additional_args:
-                command += f" {additional_args}"
+                command += f" {_safe_args(additional_args)}"
             command += " 2>&1"
             result = execute_command(command, timeout=3600)
             result["original_path"] = target
@@ -124,13 +149,13 @@ def register(app: Flask) -> None:
             # graudit v4.0 removed the "all" db — default to no -d flag (uses built-in defaults)
             database = params.get("database", "")
             additional_args = params.get("additional_args", "")
-            resolved_target = resolve_windows_path(target)
+            resolved_target = validate_scan_target(target)
             command = "graudit"
             if database:
-                command += f" -d {database}"
+                command += f" -d {shlex.quote(database)}"
             if additional_args:
-                command += f" {additional_args}"
-            command += f" {resolved_target}"
+                command += f" {_safe_args(additional_args)}"
+            command += f" {shlex.quote(resolved_target)}"
             result = execute_command(command, timeout=300)
             result["original_path"] = target
             result["resolved_path"] = resolved_target
@@ -148,14 +173,20 @@ def register(app: Flask) -> None:
             confidence_level = params.get("confidence_level", "")
             output_format = params.get("format", "json")
             additional_args = params.get("additional_args", "")
-            resolved_target = resolve_windows_path(target)
-            command = f"bandit -r {resolved_target} -f {output_format}"
+            resolved_target = validate_scan_target(target)
+            command = f"bandit -r {shlex.quote(resolved_target)} -f {shlex.quote(output_format)}"
             if severity_level:
-                command += f" -ll -l {severity_level.upper()}"
+                sev = severity_level.upper()
+                if sev not in ("LOW", "MEDIUM", "HIGH"):
+                    return jsonify({"error": f"Invalid severity_level: {severity_level}"}), 400
+                command += f" -ll -l {sev}"
             if confidence_level:
-                command += f" -ii -i {confidence_level.upper()}"
+                conf = confidence_level.upper()
+                if conf not in ("LOW", "MEDIUM", "HIGH"):
+                    return jsonify({"error": f"Invalid confidence_level: {confidence_level}"}), 400
+                command += f" -ii -i {conf}"
             if additional_args:
-                command += f" {additional_args}"
+                command += f" {_safe_args(additional_args)}"
             result = execute_command(command, timeout=BANDIT_TIMEOUT)
             result["original_path"] = target
             result["resolved_path"] = resolved_target
@@ -179,16 +210,17 @@ def register(app: Flask) -> None:
             confidence = params.get("confidence", "")
             additional_args = params.get("additional_args", "")
             exclude_dirs = params.get("exclude_dirs", "")
-            command = f"gosec -fmt={output_format}"
+            command = f"gosec -fmt={shlex.quote(output_format)}"
             if severity:
-                command += f" -severity={severity}"
+                command += f" -severity={shlex.quote(severity)}"
             if confidence:
-                command += f" -confidence={confidence}"
+                command += f" -confidence={shlex.quote(confidence)}"
             if exclude_dirs:
-                command += f" -exclude-dir={exclude_dirs}"
+                command += f" -exclude-dir={shlex.quote(exclude_dirs)}"
             if additional_args:
-                command += f" {additional_args}"
-            command += f" {target}"
+                command += f" {_safe_args(additional_args)}"
+            # gosec uses ./... style patterns — only quote if it looks like a real path
+            command += f" {shlex.quote(target) if target.startswith('/') or ':' in target else target}"
             result = execute_command(command, timeout=300)
             # Detect SSA panic (gosec bug on complex codebases)
             stderr = result.get("stderr", "")
@@ -218,12 +250,12 @@ def register(app: Flask) -> None:
             output_format = params.get("format", "json")
             confidence_level = params.get("confidence_level", "")
             additional_args = params.get("additional_args", "")
-            resolved_target = resolve_windows_path(target)
-            command = f"brakeman -p {resolved_target} -f {output_format}"
+            resolved_target = validate_scan_target(target)
+            command = f"brakeman -p {shlex.quote(resolved_target)} -f {shlex.quote(output_format)}"
             if confidence_level:
-                command += f" -w {confidence_level}"
+                command += f" -w {shlex.quote(confidence_level)}"
             if additional_args:
-                command += f" {additional_args}"
+                command += f" {_safe_args(additional_args)}"
             result = execute_command(command, timeout=300)
             result["original_path"] = target
             result["resolved_path"] = resolved_target
@@ -244,9 +276,9 @@ def register(app: Flask) -> None:
             # path(s): single "target" or list "paths" (CLI: [path ...])
             paths_param = params.get("paths")
             if paths_param is not None:
-                paths = [resolve_windows_path(p) for p in (paths_param if isinstance(paths_param, list) else [paths_param])]
+                paths = [validate_scan_target(p) for p in (paths_param if isinstance(paths_param, list) else [paths_param])]
             else:
-                paths = [resolve_windows_path(params.get("target", "."))]
+                paths = [validate_scan_target(params.get("target", "."))]
             output_format = params.get("output_format", "json").lower()
             output_file = params.get("output_file", "")
             config_file = params.get("config", "")
@@ -263,16 +295,16 @@ def register(app: Flask) -> None:
             else:
                 command_parts.append("--json")
             if output_file:
-                command_parts.extend(["-o", output_file])
+                command_parts.extend(["-o", shlex.quote(output_file)])
             if config_file:
-                command_parts.extend(["-c", resolve_windows_path(config_file)])
+                command_parts.extend(["-c", shlex.quote(validate_scan_target(config_file))])
             if missing_controls:
                 command_parts.append("--missing-controls")
             if exit_warning:
                 command_parts.append("-w")
             if additional_args:
-                command_parts.append(additional_args)
-            command_parts.extend(paths)
+                command_parts.extend(shlex.split(_safe_args(additional_args)))
+            command_parts.extend(shlex.quote(p) for p in paths)
             command = " ".join(command_parts)
             result = execute_command(command, timeout=3600)
             if output_format == "json" and result.get("stdout"):
@@ -294,14 +326,15 @@ def register(app: Flask) -> None:
             output_format = params.get("format", "json")
             fix = params.get("fix", False)
             additional_args = params.get("additional_args", "")
+            resolved_target = validate_scan_target(target)
             # ESLint v9 dropped .eslintrc.* format by default — force legacy config lookup
-            command = f"ESLINT_USE_FLAT_CONFIG=false eslint {target} -f {output_format}"
+            command = f"ESLINT_USE_FLAT_CONFIG=false eslint {shlex.quote(resolved_target)} -f {shlex.quote(output_format)}"
             if config:
-                command += f" -c {config}"
+                command += f" -c {shlex.quote(validate_scan_target(config))}"
             if fix:
                 command += " --fix"
             if additional_args:
-                command += f" {additional_args}"
+                command += f" {_safe_args(additional_args)}"
             result = execute_command(command, timeout=3600)
             if output_format == "json" and result.get("stdout"):
                 try:

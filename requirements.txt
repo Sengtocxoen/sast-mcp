@@ -1,42 +1,36 @@
 # ============================================================================
 # MCP-SAST-Server Requirements
 # ============================================================================
-# Python dependencies for the SAST server and MCP client
-#
-# Installation:
-#   pip install -r requirements.txt
-#
-# For full server functionality, you also need to install SAST tools:
-#   - Opengrep, Bandit, TruffleHog, Gitleaks, etc.
-#   See README.md for complete installation instructions
+# Versions are pinned to what was tested. Bump deliberately, not automatically.
 # ============================================================================
 
-# Web Framework (for SAST server)
-flask>=3.0.0
+# Web Framework
+flask==3.0.3
+flask-cors==4.0.1
 
-# HTTP Client (for MCP client)
-requests>=2.31.0
+# HTTP client (MCP client + results API)
+requests==2.31.0
+aiohttp==3.9.5
 
-# Model Context Protocol (for Claude Code integration)
+# Model Context Protocol
 mcp>=0.9.0
 
-# Environment Variables (optional, for .env file support)
-python-dotenv>=1.0.0
+# Environment variables
+python-dotenv==1.0.1
 
-# TOON Format Converter (for LLM-optimized output)
-python-toon>=0.1.0
-
-# Process and System Monitoring (for multi-process backend)
-psutil>=5.9.0
+# Process and system monitoring
+psutil==5.9.8
 
 # ============================================================================
-# Optional: Python-based SAST Tools
+# NOTE: python-toon was removed — the package does not exist on PyPI.
+# TOON conversion is handled internally via tools/toon_converter.py and
+# gracefully disabled when the import fails.
 # ============================================================================
-# These tools can be installed via pip, but are optional.
-# Many SAST tools are installed separately (npm, apt, etc.)
-#
-# Uncomment to install Python-based tools:
-# opengrep>=1.52.0
-# bandit>=1.7.6
-# safety>=3.0.1
-# checkov>=3.1.34
+
+# ============================================================================
+# Optional Python-based SAST tools (uncomment to install via pip)
+# Most tools are installed separately via apt/npm/go.
+# ============================================================================
+# bandit==1.7.8
+# safety==3.2.0
+# checkov==3.2.0

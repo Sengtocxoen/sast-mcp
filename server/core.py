@@ -60,6 +60,10 @@ from tools.ai_analysis import (
 
 logger = logging.getLogger(__name__)
 
+# Thread-local storage so CommandExecutor can register the OS process with the
+# Job that owns this thread, enabling real cancellation via kill.
+_current_job_local = threading.local()
+
 # ---------------------------------------------------------------------------
 # Multiprocess / threading state
 # ---------------------------------------------------------------------------
@@ -128,6 +132,8 @@ class Job:
         self.result: Optional[Dict[str, Any]] = None
         self.error: Optional[str] = None
         self.progress = 0
+        # Not serialized — holds the OS process for real cancellation
+        self._process: Optional[subprocess.Popen] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -199,6 +205,8 @@ def _save_job_result(job: Job, result: Dict[str, Any]) -> None:
 
 
 class JobManager:
+    _CLEANUP_INTERVAL_SECS = 3600  # run auto-cleanup every hour
+
     def __init__(self, max_workers: int = MAX_WORKERS):
         self.jobs: Dict[str, Job] = {}
         self.lock = threading.Lock()
@@ -209,6 +217,21 @@ class JobManager:
         )
         os.makedirs(DEFAULT_OUTPUT_DIR, exist_ok=True)
         logger.info(f"JobManager initialized (multiprocess={USE_MULTIPROCESSING})")
+        self._start_cleanup_timer()
+
+    def _start_cleanup_timer(self) -> None:
+        """Auto-cleanup expired jobs every hour so memory doesn't grow unbounded."""
+        def _cleanup_loop() -> None:
+            while True:
+                time.sleep(self._CLEANUP_INTERVAL_SECS)
+                try:
+                    removed = self.cleanup_old_jobs()
+                    if removed:
+                        logger.info(f"Auto-cleanup: removed {removed} expired jobs")
+                except Exception as e:
+                    logger.warning(f"Auto-cleanup error: {e}")
+        t = threading.Thread(target=_cleanup_loop, daemon=True, name="job-auto-cleanup")
+        t.start()
 
     def create_job(self, tool_name: str, params: Dict[str, Any], output_file: Optional[str] = None) -> Job:
         job_id = str(uuid.uuid4())
@@ -238,6 +261,8 @@ class JobManager:
         self.executor.submit(self._run_job, job, work_func, *args, **kwargs)
 
     def _run_job(self, job: Job, work_func: Any, *args: Any, **kwargs: Any) -> None:
+        # Register job in thread-local so CommandExecutor can attach the OS process to it
+        _current_job_local.job = job
         try:
             if not acquire_scan_slot(timeout=SCAN_WAIT_TIMEOUT):
                 job.status = JobStatus.FAILED
@@ -266,11 +291,32 @@ class JobManager:
             traceback.print_exc()
             with scan_stats_lock:
                 scan_stats["failed_scans"] = scan_stats.get("failed_scans", 0) + 1
+        finally:
+            _current_job_local.job = None
 
     def cancel_job(self, job_id: str) -> bool:
         job = self.get_job(job_id)
         if not job or job.status not in (JobStatus.PENDING, JobStatus.RUNNING):
             return False
+        # Kill the actual OS process group (kills child processes too, e.g. semgrep workers)
+        if job._process and job._process.poll() is None:
+            try:
+                import signal
+                pgid = os.getpgid(job._process.pid)
+                os.killpg(pgid, signal.SIGTERM)
+                try:
+                    job._process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(pgid, signal.SIGKILL)
+                logger.info(f"Killed process group (pgid={pgid}) for job {job_id}")
+            except ProcessLookupError:
+                pass  # Process already exited
+            except Exception as e:
+                logger.warning(f"Could not kill process group for job {job_id}: {e}")
+                try:
+                    job._process.terminate()
+                except Exception:
+                    pass
         job.status = JobStatus.CANCELLED
         job.completed_at = datetime.now()
         logger.info(f"Job {job_id} cancelled")
@@ -316,6 +362,25 @@ def resolve_windows_path(windows_path: str) -> str:
     return windows_path
 
 
+def validate_scan_target(user_path: str) -> str:
+    """
+    Resolve a user-supplied scan target and assert it stays within MOUNT_POINT.
+    Raises ValueError if the path escapes the mount (path traversal attempt).
+    Use this instead of resolve_windows_path() for any value that comes from
+    an HTTP request body.
+    """
+    resolved = resolve_windows_path(user_path)
+    # Normalise away any .. components before the prefix check
+    norm = os.path.normpath(resolved)
+    mount_norm = os.path.normpath(MOUNT_POINT)
+    if not (norm == mount_norm or norm.startswith(mount_norm + "/")):
+        raise ValueError(
+            f"Scan target {user_path!r} resolves to {norm!r}, which is outside "
+            f"the allowed mount point ({MOUNT_POINT})"
+        )
+    return resolved
+
+
 def verify_mount() -> Dict[str, Any]:
     issues = []
     if not os.path.exists(MOUNT_POINT):
@@ -326,6 +391,14 @@ def verify_mount() -> Dict[str, Any]:
                 issues.append(f"Mount point appears empty: {MOUNT_POINT}")
         except Exception as e:
             issues.append(str(e))
+        # Test actual write access — a read-only mount fails silently otherwise
+        test_path = os.path.join(MOUNT_POINT, ".sast_write_test")
+        try:
+            with open(test_path, "w") as f:
+                f.write("ok")
+            os.unlink(test_path)
+        except Exception as e:
+            issues.append(f"Mount point not writable: {e}")
     return {"is_mounted": len(issues) == 0, "mount_point": MOUNT_POINT, "windows_base": WINDOWS_BASE, "issues": issues}
 
 
@@ -402,7 +475,14 @@ class CommandExecutor:
             self.process = subprocess.Popen(
                 self.command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, bufsize=1, cwd=self.cwd, env=self.env,
+                # New process group so cancel_job() can kill the whole tree (shell + tool)
+                preexec_fn=os.setsid,
             )
+            # Register OS process with the owning Job (thread-local) for real cancellation
+            job = getattr(_current_job_local, "job", None)
+            if job is not None:
+                job._process = self.process
+
             t1 = threading.Thread(target=self._read_stdout, daemon=True)
             t2 = threading.Thread(target=self._read_stderr, daemon=True)
             t1.start()
@@ -501,6 +581,14 @@ def categorize_error(result: Dict[str, Any]) -> Dict[str, Any]:
         info["category"] = info["severity"] = info["remediation_hint"] = None
         info["retryable"] = False
         return info
+    # If the tool-specific handler did NOT set an explicit "error" key and we have stdout,
+    # treat this as a successful scan (e.g. opengrep/semgrep rc=1 = findings found, not failure).
+    if not result.get("error") and result.get("stdout"):
+        info["category"] = None
+        info["severity"] = None
+        info["remediation_hint"] = None
+        info["retryable"] = False
+        return info
     combined = (result.get("stderr", "") + result.get("stdout", "")).lower()
     if "command not found" in combined or "not found" in combined:
         info.update({"category": ErrorCategory.TOOL_NOT_FOUND.value, "severity": "high", "retryable": False})
@@ -512,7 +600,8 @@ def categorize_error(result: Dict[str, Any]) -> Dict[str, Any]:
         info.update({"category": ErrorCategory.NETWORK_ERROR.value})
     elif result.get("return_code") == -1 or "crash" in combined:
         info.update({"category": ErrorCategory.PROCESS_CRASH.value, "severity": "critical"})
-    elif result.get("return_code", 0) != 0:
+    elif result.get("return_code", 0) not in (0, 1):
+        # rc=1 is normal for tools that return it on findings (opengrep, bandit, etc.)
         info.update({"category": ErrorCategory.TOOL_ERROR.value})
     return info
 
@@ -578,7 +667,11 @@ def run_scan_synchronously(tool_name: str, params: Dict[str, Any], scan_function
     try:
         result = scan_function(params)
         completed = datetime.now()
-        if not result.get("success", True) or result.get("error"):
+        # Check explicit error key only — do NOT rely on `success` flag, because tools like
+        # opengrep/semgrep/bandit return exit code 1 when findings are present (not a real error).
+        # CommandExecutor sets success=False for any non-zero exit, so using it here would
+        # incorrectly treat every scan-with-findings as failed.
+        if result.get("error"):
             return {
                 "success": False,
                 "message": result.get("error", "Scan failed"),
