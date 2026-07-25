@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional
 import psutil
 
 from config import (
+    ALLOWED_MOUNTS,
     COMMAND_TIMEOUT,
     DEFAULT_OUTPUT_DIR,
     DEFAULT_PAGE_SIZE,
@@ -380,21 +381,23 @@ def resolve_windows_path(windows_path: str) -> str:
 
 def validate_scan_target(user_path: str) -> str:
     """
-    Resolve a user-supplied scan target and assert it stays within MOUNT_POINT.
-    Raises ValueError if the path escapes the mount (path traversal attempt).
+    Resolve a user-supplied scan target and assert it stays within one of the
+    allowed mount roots (ALLOWED_MOUNTS, which always includes MOUNT_POINT).
+    Raises ValueError if the path escapes them (path traversal attempt).
     Use this instead of resolve_windows_path() for any value that comes from
     an HTTP request body.
     """
     resolved = resolve_windows_path(user_path)
     # Normalise away any .. components before the prefix check
     norm = os.path.normpath(resolved)
-    mount_norm = os.path.normpath(MOUNT_POINT)
-    if not (norm == mount_norm or norm.startswith(mount_norm + "/")):
-        raise ValueError(
-            f"Scan target {user_path!r} resolves to {norm!r}, which is outside "
-            f"the allowed mount point ({MOUNT_POINT})"
-        )
-    return resolved
+    for mount in ALLOWED_MOUNTS:
+        mount_norm = os.path.normpath(mount)
+        if norm == mount_norm or norm.startswith(mount_norm + os.sep):
+            return resolved
+    raise ValueError(
+        f"Scan target {user_path!r} resolves to {norm!r}, which is outside "
+        f"the allowed mount roots ({', '.join(ALLOWED_MOUNTS)})"
+    )
 
 
 def verify_mount() -> Dict[str, Any]:

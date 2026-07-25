@@ -38,6 +38,16 @@ DEPENDENCY_CHECK_PATH = os.environ.get("DEPENDENCY_CHECK_PATH", "dependency-chec
 MOUNT_POINT = os.environ.get("MOUNT_POINT", "/mnt/work")
 WINDOWS_BASE = os.environ.get("WINDOWS_BASE", "F:/work")
 
+# Extra mount roots that scan targets may live under, beyond MOUNT_POINT.
+# Comma-separated Linux paths. Lets one server scan several VMware shared
+# folders (e.g. /mnt/Resola and /mnt/SidePrs) without loosening validation to
+# all of /mnt. MOUNT_POINT is always included. Backward-compatible default.
+ALLOWED_MOUNTS = []
+for _m in ([MOUNT_POINT] + os.environ.get("ALLOWED_MOUNTS", "").split(",")):
+    _m = _m.strip().rstrip("/")
+    if _m and _m not in ALLOWED_MOUNTS:
+        ALLOWED_MOUNTS.append(_m)
+
 # Dashboard integration: where semgrep.json / bandit.json land per project
 # Mirrors F:/Resola/Security/sast-results on Windows
 SAST_RESULTS_DIR = os.environ.get("SAST_RESULTS_DIR", "/mnt/Resola/Security/sast-results")
