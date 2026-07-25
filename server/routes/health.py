@@ -2,9 +2,46 @@
 Health check route: GET /health with tool availability and scan stats.
 """
 import logging
+import shutil
 from flask import Flask, jsonify
 
 from core import execute_command, check_process_health, scan_stats_lock, scan_stats
+
+# Tools whose availability should also be satisfied by a compatible alternative
+# binary. opengrep is a drop-in fork of semgrep (identical scan CLI), so having
+# either one installed means the Semgrep-class scanner is available.
+_TOOL_ALIASES = {
+    "opengrep": ("semgrep",),
+    "semgrep": ("opengrep",),
+}
+
+
+def _binary_of(check_cmd: str) -> str:
+    """First real binary token of a version/`which` check command."""
+    parts = check_cmd.split()
+    if not parts:
+        return ""
+    if parts[0] == "which" and len(parts) > 1:
+        return parts[1]
+    return parts[0]
+
+
+def _tool_available(tool: str, check_cmd: str) -> bool:
+    """Detect a tool robustly.
+
+    Presence on PATH is the source of truth: it is immune to flaky `--version`
+    flags, tools that exit non-zero on version, and venv-installed binaries whose
+    version subprocess env differs. Falls back to running the version command only
+    when the binary name cannot be resolved on PATH.
+    """
+    candidates = (_binary_of(check_cmd),) + _TOOL_ALIASES.get(tool, ())
+    for binary in candidates:
+        if binary and shutil.which(binary):
+            return True
+    try:
+        return bool(execute_command(check_cmd, timeout=10).get("success"))
+    except Exception:
+        return False
 from config import (
     DEPENDENCY_CHECK_PATH,
     FORCE_SYNC_SCANS,
@@ -56,29 +93,22 @@ def register(app: Flask) -> None:
 
         tools_status = {}
 
-        for tool, check_cmd in essential_tools.items():
-            try:
-                result = execute_command(check_cmd, timeout=10)
-                tools_status[tool] = result["success"]
-            except Exception:
-                tools_status[tool] = False
+        for group in (essential_tools, additional_tools, kali_tools):
+            for tool, check_cmd in group.items():
+                tools_status[tool] = _tool_available(tool, check_cmd)
 
-        for tool, check_cmd in additional_tools.items():
-            try:
-                result = execute_command(check_cmd, timeout=10)
-                tools_status[tool] = result["success"]
-            except Exception:
-                tools_status[tool] = False
+        # Report the Semgrep-class engine under both names so clients can see which
+        # binary is actually installed (opengrep fork vs semgrep upstream) rather
+        # than one masking the other via the alias.
+        tools_status["semgrep"] = shutil.which("semgrep") is not None
+        tools_status["opengrep"] = shutil.which("opengrep") is not None
 
-        for tool, check_cmd in kali_tools.items():
-            try:
-                result = execute_command(check_cmd, timeout=10)
-                tools_status[tool] = result["success"]
-            except Exception:
-                tools_status[tool] = False
-
-        all_essential_available = all(
-            tools_status.get(tool, False) for tool in essential_tools.keys()
+        # The Semgrep-class scanner counts as present if EITHER engine is installed.
+        _grep_ok = tools_status["semgrep"] or tools_status["opengrep"]
+        all_essential_available = _grep_ok and all(
+            tools_status.get(tool, False)
+            for tool in essential_tools.keys()
+            if tool != "opengrep"
         )
         available_count = sum(1 for v in tools_status.values() if v)
         total_count = len(tools_status)

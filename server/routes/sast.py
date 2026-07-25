@@ -17,6 +17,7 @@ from config import (
 )
 from core import (
     execute_command,
+    resolve_grep_engine,
     resolve_windows_path,
     validate_scan_target,
     run_scan_in_background,
@@ -46,7 +47,8 @@ def _opengrep_scan(params: Dict[str, Any]) -> Dict[str, Any]:
     output_format = params.get("output_format", "json")
     additional_args = params.get("additional_args", "")
     resolved_target = validate_scan_target(target)
-    command = f"opengrep scan --config={shlex.quote(config)}"
+    engine = resolve_grep_engine()
+    command = f"{engine} scan --config={shlex.quote(config)}"
     if lang:
         command += f" --lang={shlex.quote(lang)}"
     if severity:
@@ -64,7 +66,7 @@ def _opengrep_scan(params: Dict[str, Any]) -> Dict[str, Any]:
     #   2 = fatal error (bad config, crash, etc.)
     return_code = result.get("return_code", 0)
     if return_code == 2 or (return_code not in (0, 1) and not result.get("stdout")):
-        result["error"] = result.get("stderr", "opengrep failed with no output")
+        result["error"] = result.get("stderr", "opengrep/semgrep failed with no output")
         result["summary"] = {}
         return result
     summary = {}
@@ -103,6 +105,25 @@ def register(app: Flask) -> None:
             return jsonify({"error": str(e)}), 400
         except Exception as e:
             logger.error(f"opengrep: {e}\n{traceback.format_exc()}")
+            return jsonify({"error": str(e)}), 500
+
+    # Alias: semgrep is CLI-compatible with opengrep (opengrep is a fork of it),
+    # so clients may call either endpoint. Both run the same resolver-backed scan.
+    @app.route("/api/sast/semgrep", methods=["POST"])
+    def semgrep():
+        try:
+            params = request.json or {}
+            force_sync = params.get("force_sync", False)
+            background = params.get("background", not FORCE_SYNC_SCANS)
+            if FORCE_SYNC_SCANS or force_sync or not background:
+                result = run_scan_synchronously("semgrep", params, _opengrep_scan)
+                return jsonify(result)
+            result = run_scan_in_background("semgrep", params, _opengrep_scan)
+            return jsonify(result)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:
+            logger.error(f"semgrep: {e}\n{traceback.format_exc()}")
             return jsonify({"error": str(e)}), 500
 
     @app.route("/api/sast/bearer", methods=["POST"])

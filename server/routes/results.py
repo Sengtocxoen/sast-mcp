@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Optional
 from flask import Flask, request, jsonify
 
 from config import SAST_RESULTS_DIR, RESOLA_SRC_DIR, BANDIT_TIMEOUT, OPENGREP_TIMEOUT
+from core import resolve_grep_engine
 
 logger = logging.getLogger(__name__)
 
@@ -133,8 +134,9 @@ def _scan_one_project(
         configs = " ".join(f"--config={shlex.quote(c)}" for c in semgrep_config.split())
         out_file = shlex.quote(os.path.join(out_dir, "semgrep.json"))
         err_file = shlex.quote(os.path.join(out_dir, "semgrep.err"))
-        cmd = f"semgrep scan {configs} --json --output={out_file} {shlex.quote(src_path)} 2>{err_file}"
-        logger.info(f"[scan-trigger] semgrep {name}")
+        engine = resolve_grep_engine()
+        cmd = f"{engine} scan {configs} --json --output={out_file} {shlex.quote(src_path)} 2>{err_file}"
+        logger.info(f"[scan-trigger] {engine} {name}")
         try:
             proc = subprocess.run(
                 cmd, shell=True, timeout=OPENGREP_TIMEOUT,

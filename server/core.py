@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -53,6 +54,21 @@ from tools.toon_converter import (
     calculate_token_savings,
     prepare_toon_for_ai_analysis,
 )
+
+
+def resolve_grep_engine(default: str = "opengrep") -> str:
+    """Return the installed Semgrep-class engine binary name.
+
+    opengrep is a drop-in fork of semgrep and shares an identical
+    ``scan --config=... --json <target>`` CLI, so either binary is usable.
+    Preference order: opengrep (historical project default), then semgrep
+    (common when installed via pip/venv). Falls back to ``default`` when
+    neither is on PATH so callers still emit a sensible command/error.
+    """
+    for binary in ("opengrep", "semgrep"):
+        if shutil.which(binary):
+            return binary
+    return default
 from tools.ai_analysis import (
     analyze_scan_results,
     create_toon_analysis_result,
