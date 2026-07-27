@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -41,6 +42,8 @@ from config import (
     MOUNT_POINT,
     PROCESS_MEMORY_LIMIT_MB,
     RETRY_BACKOFF_BASE,
+    SCAN_MEMORY_LIMIT_MODE,
+    SCAN_MEMORY_MAX_MB,
     SCAN_WAIT_TIMEOUT,
     SYNC_RESPONSE_INCLUDE_FINDINGS,
     SYNC_RESPONSE_MAX_FINDINGS,
@@ -461,6 +464,80 @@ ENHANCED_ENV = get_enhanced_env()
 
 
 # ---------------------------------------------------------------------------
+# Per-scan memory cap
+#
+# A single memory-hungry tool (notably gosec type-loading a large generated
+# package) can allocate until the host exhausts RAM, swap-thrashes, and takes
+# the whole server down with no way back in. To contain that, each scan
+# subprocess is run inside a transient systemd-run cgroup scope with a hard
+# MemoryMax and MemorySwapMax=0, so the kernel OOM-kills just that tool at the
+# cap instead of dragging the host into swap-death.
+#
+# This is best-effort: it only activates when systemd-run is actually usable in
+# this environment (proven by a one-time startup probe). Where it isn't (no
+# systemd, no cgroup delegation for a non-root user, etc.) scans run exactly as
+# before — unwrapped — so enabling the guard can never break a working server.
+# RSS/cgroup limiting is used deliberately rather than RLIMIT_AS: Go tools
+# reserve huge virtual address space, so an address-space rlimit would kill them
+# spuriously.
+# ---------------------------------------------------------------------------
+_memory_limiter_supported: Optional[bool] = None
+
+
+def _probe_memory_limiter() -> bool:
+    """Return True if systemd-run can enforce a MemoryMax scope here. Cached."""
+    global _memory_limiter_supported
+    if _memory_limiter_supported is not None:
+        return _memory_limiter_supported
+
+    supported = False
+    try:
+        if SCAN_MEMORY_LIMIT_MODE == "0":
+            supported = False
+        elif SCAN_MEMORY_MAX_MB <= 0:
+            supported = False
+        elif shutil.which("systemd-run") is None:
+            supported = False
+        else:
+            user_scope = [] if os.geteuid() == 0 else ["--user"]
+            probe = subprocess.run(
+                ["systemd-run", "--scope", "--quiet", "--collect", *user_scope,
+                 "-p", "MemoryMax=64M", "--", "/bin/true"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15,
+            )
+            supported = probe.returncode == 0
+    except Exception as e:  # pragma: no cover - environment dependent
+        logger.warning(f"memory-limit probe failed; scans will run unwrapped: {e}")
+        supported = False
+
+    if supported:
+        logger.info(f"scan memory cap active: {SCAN_MEMORY_MAX_MB}MB per scan via systemd-run scope")
+    else:
+        logger.warning(
+            "scan memory cap inactive (systemd-run unavailable/disabled); "
+            "a runaway tool could exhaust host memory"
+        )
+    _memory_limiter_supported = supported
+    return supported
+
+
+def wrap_with_memory_limit(command: str) -> str:
+    """Wrap a shell command so it runs under a hard per-scan memory cap.
+
+    Returns the command unchanged when the limiter isn't usable, so callers can
+    apply it unconditionally.
+    """
+    if not _probe_memory_limiter():
+        return command
+    user_scope = "" if os.geteuid() == 0 else "--user "
+    return (
+        f"systemd-run --scope --quiet --collect {user_scope}"
+        f"-p MemoryMax={SCAN_MEMORY_MAX_MB}M -p MemorySwapMax=0 "
+        f"-- /bin/sh -c {shlex.quote(command)}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Command execution
 # ---------------------------------------------------------------------------
 class CommandExecutor:
@@ -491,8 +568,12 @@ class CommandExecutor:
 
     def execute(self) -> Dict[str, Any]:
         try:
+            # Run under a hard per-scan memory cap when the environment supports
+            # it, so a runaway tool is OOM-killed in isolation rather than taking
+            # down the host. No-op passthrough where unsupported.
+            exec_command = wrap_with_memory_limit(self.command)
             self.process = subprocess.Popen(
-                self.command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                exec_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, bufsize=1, cwd=self.cwd, env=self.env,
                 # New process group so cancel_job() can kill the whole tree (shell + tool)
                 preexec_fn=os.setsid,
