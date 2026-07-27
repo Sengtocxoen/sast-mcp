@@ -448,7 +448,16 @@ def save_scan_output_to_file(output_file: str, stdout_data: str, format_type: st
 
 def get_enhanced_env() -> Dict[str, str]:
     env = os.environ.copy()
+    # The bin dir of the running interpreter. When the server is started via
+    # `venv/bin/python` (without `source venv/bin/activate`), PATH does NOT
+    # include venv/bin, so venv-installed tools (semgrep, bandit, safety,
+    # trufflehog, ...) are unreachable by bare name and both scans AND health
+    # detection silently miss them. Adding it here — first, so it wins — makes
+    # those tools resolvable regardless of how the server was launched.
+    interpreter_bin = os.path.dirname(os.path.abspath(sys.executable))
+    venv_bin = os.path.join(sys.prefix, "bin")
     extra = [
+        interpreter_bin, venv_bin,
         "/root/.local/bin", os.path.expanduser("~/.local/bin"),
         "/root/go/bin", os.path.expanduser("~/go/bin"), "/usr/local/go/bin",
         "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin",

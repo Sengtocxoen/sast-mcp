@@ -5,7 +5,16 @@ import logging
 import shutil
 from flask import Flask, jsonify
 
-from core import execute_command, check_process_health, scan_stats_lock, scan_stats
+from core import (
+    execute_command, check_process_health, scan_stats_lock, scan_stats,
+    ENHANCED_ENV,
+)
+
+# Detect tools against the SAME PATH the executor runs them with (includes the
+# venv bin dir and the extra tool dirs). Bare shutil.which() would probe only
+# the server process PATH and falsely report venv-installed tools (semgrep,
+# bandit, safety, trufflehog, ...) as unavailable even though scans run them.
+_ENHANCED_PATH = ENHANCED_ENV.get("PATH")
 
 # Tools whose availability should also be satisfied by a compatible alternative
 # binary. opengrep is a drop-in fork of semgrep (identical scan CLI), so having
@@ -36,7 +45,7 @@ def _tool_available(tool: str, check_cmd: str) -> bool:
     """
     candidates = (_binary_of(check_cmd),) + _TOOL_ALIASES.get(tool, ())
     for binary in candidates:
-        if binary and shutil.which(binary):
+        if binary and shutil.which(binary, path=_ENHANCED_PATH):
             return True
     try:
         return bool(execute_command(check_cmd, timeout=10).get("success"))
@@ -100,8 +109,8 @@ def register(app: Flask) -> None:
         # Report the Semgrep-class engine under both names so clients can see which
         # binary is actually installed (opengrep fork vs semgrep upstream) rather
         # than one masking the other via the alias.
-        tools_status["semgrep"] = shutil.which("semgrep") is not None
-        tools_status["opengrep"] = shutil.which("opengrep") is not None
+        tools_status["semgrep"] = shutil.which("semgrep", path=_ENHANCED_PATH) is not None
+        tools_status["opengrep"] = shutil.which("opengrep", path=_ENHANCED_PATH) is not None
 
         # The Semgrep-class scanner counts as present if EITHER engine is installed.
         _grep_ok = tools_status["semgrep"] or tools_status["opengrep"]
