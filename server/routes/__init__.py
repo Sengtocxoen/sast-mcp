@@ -6,8 +6,9 @@ from flask import Flask
 
 
 def register_all(app: Flask) -> None:
-    from . import sast, secrets, dependencies, iac, container, kali, util, jobs, analysis, health, results
+    from . import sast, secrets, dependencies, iac, container, kali, util, jobs, analysis, health, results, repo_scan
     sast.register(app)
+    repo_scan.register(app)
     secrets.register(app)
     dependencies.register(app)
     iac.register(app)
