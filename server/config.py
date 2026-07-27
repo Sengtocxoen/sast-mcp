@@ -68,6 +68,16 @@ SCAN_WAIT_TIMEOUT = int(os.environ.get("SCAN_WAIT_TIMEOUT", 1800))
 USE_MULTIPROCESSING = os.environ.get("USE_MULTIPROCESSING", "1").lower() in ("1", "true", "yes", "y")
 MAX_PROCESS_WORKERS = int(os.environ.get("MAX_PROCESS_WORKERS", max(4, multiprocessing.cpu_count() - 1)))
 PROCESS_MEMORY_LIMIT_MB = int(os.environ.get("PROCESS_MEMORY_LIMIT_MB", 2048))
+# Hard memory cap (RSS) for each scan subprocess, enforced via a systemd-run
+# transient cgroup scope when available. A runaway tool (e.g. gosec loading a
+# huge generated package) is OOM-killed at this cap in isolation instead of
+# dragging the whole host into swap-death. Independent of the Flask-process
+# health threshold above. Set to 0 to disable the cap entirely.
+SCAN_MEMORY_MAX_MB = int(os.environ.get("SCAN_MEMORY_MAX_MB", 3072))
+# "auto" (default): use systemd-run only if a startup probe proves it works in
+# this environment. "1"/"0": force enable/disable (enable still requires
+# systemd-run to be usable, else it silently falls back to unwrapped).
+SCAN_MEMORY_LIMIT_MODE = os.environ.get("SCAN_MEMORY_LIMIT_MODE", "auto").lower()
 MAX_RETRY_ATTEMPTS = int(os.environ.get("MAX_RETRY_ATTEMPTS", 2))
 RETRY_BACKOFF_BASE = float(os.environ.get("RETRY_BACKOFF_BASE", 2.0))
 
