@@ -777,6 +777,65 @@ def run_scan_in_background(tool_name: str, params: Dict[str, Any], scan_function
     }
 
 
+def run_scan_in_thread(tool_name: str, params: Dict[str, Any], scan_function: Any) -> Dict[str, Any]:
+    """Run a scan as a background job on a daemon THREAD (not the process pool).
+
+    The process-pool background path (submit_job) can't be used for genuinely
+    long jobs here: it submits JobManager._run_job — a bound method of a manager
+    holding a threading.Lock and a ProcessPoolExecutor — to a ProcessPoolExecutor,
+    which cannot pickle it, so the task dies in the pool and the job is stuck
+    PENDING forever. SAST endpoints never hit this because FORCE_SYNC_SCANS routes
+    them through run_scan_synchronously; long jobs (e.g. fuzzing) that must be
+    async need this thread-based path. Scan work shells out to subprocesses via
+    execute_command, so a thread (no GIL contention) is the right tool anyway.
+    """
+    job = job_manager.create_job(tool_name, params, params.get("output_file"))
+
+    def _worker() -> None:
+        _current_job_local.job = job
+        try:
+            if not acquire_scan_slot(timeout=SCAN_WAIT_TIMEOUT):
+                job.status = JobStatus.FAILED
+                job.completed_at = datetime.now()
+                job.error = f"Timeout waiting for scan slot after {SCAN_WAIT_TIMEOUT}s"
+                with scan_stats_lock:
+                    scan_stats["failed_scans"] = scan_stats.get("failed_scans", 0) + 1
+                return
+            try:
+                job.status = JobStatus.RUNNING
+                job.started_at = datetime.now()
+                result = scan_function(params)
+                _save_job_result(job, result)
+                job.status = JobStatus.COMPLETED
+                job.completed_at = datetime.now()
+                job.result = {"success": True, "output_file": job.output_file, "summary": result.get("summary", {})}
+                with scan_stats_lock:
+                    scan_stats["completed_scans"] = scan_stats.get("completed_scans", 0) + 1
+            finally:
+                release_scan_slot()
+        except Exception as e:
+            job.status = JobStatus.FAILED
+            job.completed_at = datetime.now()
+            job.error = str(e)
+            logger.error(f"Threaded job {job.job_id} failed: {e}")
+            traceback.print_exc()
+            with scan_stats_lock:
+                scan_stats["failed_scans"] = scan_stats.get("failed_scans", 0) + 1
+        finally:
+            _current_job_local.job = None
+
+    threading.Thread(target=_worker, daemon=True, name=f"job-{job.job_id[:8]}").start()
+    return {
+        "success": True,
+        "message": "Scan job submitted successfully (threaded)",
+        "job_id": job.job_id,
+        "job_status": job.status.value,
+        "output_file": job.output_file,
+        "check_status_url": f"/api/jobs/{job.job_id}",
+        "get_result_url": f"/api/jobs/{job.job_id}/result",
+    }
+
+
 def run_scan_synchronously(tool_name: str, params: Dict[str, Any], scan_function: Any) -> Dict[str, Any]:
     job_id = str(uuid.uuid4())
     started = datetime.now()

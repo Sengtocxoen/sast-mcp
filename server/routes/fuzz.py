@@ -20,7 +20,7 @@ from typing import Any, Dict, List
 
 from flask import Flask, request, jsonify
 
-from core import execute_command, validate_scan_target, run_scan_in_background
+from core import execute_command, validate_scan_target, run_scan_in_thread
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +167,9 @@ def register(app: Flask) -> None:
                 return jsonify({"target": root, "count": len(targets), "targets": targets})
 
             # Fuzzing is long-running -> always background, regardless of FORCE_SYNC_SCANS.
-            return jsonify(run_scan_in_background("fuzz-go", params, run_go_fuzz))
+            # Thread-based (not the process pool) so the long job actually runs; see
+            # run_scan_in_thread for why the pool path can't carry these.
+            return jsonify(run_scan_in_thread("fuzz-go", params, run_go_fuzz))
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         except Exception as e:
