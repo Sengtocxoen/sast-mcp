@@ -456,8 +456,17 @@ def get_enhanced_env() -> Dict[str, str]:
     # those tools resolvable regardless of how the server was launched.
     interpreter_bin = os.path.dirname(os.path.abspath(sys.executable))
     venv_bin = os.path.join(sys.prefix, "bin")
+    # The PROJECT's own venv bin, derived from this file's location
+    # (<repo>/server/core.py -> <repo>/venv/bin). Unlike sys.executable/sys.prefix
+    # above, this still points at the sast-mcp venv even when the server is
+    # launched with a different interpreter (e.g. `sudo python3 ...` or system
+    # python), which is exactly the case where semgrep/trufflehog installed only
+    # in the venv would otherwise be invisible to both scans and health.
+    project_venv_bin = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "venv", "bin"
+    )
     extra = [
-        interpreter_bin, venv_bin,
+        interpreter_bin, venv_bin, project_venv_bin,
         "/root/.local/bin", os.path.expanduser("~/.local/bin"),
         "/root/go/bin", os.path.expanduser("~/go/bin"), "/usr/local/go/bin",
         "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin",
