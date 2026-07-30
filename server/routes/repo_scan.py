@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import traceback
 from collections import Counter
@@ -54,6 +55,10 @@ _LANG_MAP = {
 }
 _SKIP_DIRS = {".git", "vendor", "node_modules", "dist", "build", "testdata", "third_party"}
 _CLONE_TIMEOUT = 300
+# Clone + scan here (local disk) by default. Scanning off the vmhgfs share is
+# ~100x slower due to per-file fuse round-trips; only the small JSON reports
+# get copied back to the mount for the user.
+REPO_SCAN_LOCAL_DIR = os.environ.get("REPO_SCAN_LOCAL_DIR", "/var/tmp/sast-repos")
 _SEMGREP_TIMEOUT = 1800
 _TOOL_TIMEOUT = 900
 
@@ -134,6 +139,27 @@ def _run_tool(tool: str, command: str, report: str, timeout: int) -> Dict[str, A
     return out
 
 
+def _grep_jobs_mem():
+    """Native multi-core sizing: jobs*per-worker-mem stays under ~80% of the cap."""
+    from config import MAX_PROCESS_WORKERS, SCAN_MEMORY_MAX_MB
+    per = 512
+    jobs = max(1, min(os.cpu_count() or 4, MAX_PROCESS_WORKERS))
+    jobs = max(1, min(jobs, int(SCAN_MEMORY_MAX_MB * 0.8) // per))
+    return jobs, per
+
+
+def _publish_reports(out_dir: str, mount_base: str, name: str) -> str:
+    """Copy the JSON reports from local scratch to the mount so the user can read them."""
+    dest = os.path.join(mount_base, name, "_sast_reports")
+    try:
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.copytree(out_dir, dest, dirs_exist_ok=True)
+        return dest
+    except Exception as e:
+        logger.warning(f"repo-scan: could not publish reports to mount: {e}")
+        return out_dir
+
+
 def _build_plan(langs: Counter, dest: str, out_dir: str, want: Dict[str, bool]) -> List[Dict[str, Any]]:
     """Assemble the tool command list for the detected languages."""
     plan: List[Dict[str, Any]] = []
@@ -153,7 +179,9 @@ def _build_plan(langs: Counter, dest: str, out_dir: str, want: Dict[str, bool]) 
         rep = os.path.join(out_dir, "semgrep.json")
         cfg = " ".join(f"--config {q(c)}" for c in configs)
         excl = " ".join(f"--exclude {q(d)}" for d in sorted(_SKIP_DIRS))
-        cmd = (f"{engine} scan {cfg} --metrics=off {excl} "
+        jobs, mem = _grep_jobs_mem()
+        cmd = (f"{engine} scan {cfg} --jobs {jobs} --max-memory {mem} "
+               f"--timeout 10 --timeout-threshold 3 --metrics=off {excl} "
                f"--json --output={q(rep)} {q(dest)}")
         plan.append({"tool": "semgrep", "command": cmd, "report": rep, "timeout": _SEMGREP_TIMEOUT})
 
@@ -194,9 +222,12 @@ def register(app: Flask) -> None:
             if ref and re.search(r"[^A-Za-z0-9._/-]", ref):
                 return jsonify({"error": "invalid ref"}), 400
 
-            base_dir = params.get("base_dir") or _default_base_dir()
-            # Confine the clone target to an allowed mount (raises ValueError -> 400).
-            base_dir = validate_scan_target(base_dir)
+            local = params.get("local", True)
+            # Reports are published here (validated to an allowed mount).
+            mount_base = validate_scan_target(params.get("base_dir") or _default_base_dir())
+            # Clone+scan on fast local disk by default; publish reports to the mount.
+            base_dir = REPO_SCAN_LOCAL_DIR if local else mount_base
+            os.makedirs(base_dir, exist_ok=True)
 
             want = {
                 "secrets": params.get("secrets", True),
@@ -216,12 +247,14 @@ def register(app: Flask) -> None:
             plan = _build_plan(langs, dest, out_dir, want)
             results = [_run_tool(p["tool"], p["command"], p["report"], p["timeout"]) for p in plan]
 
+            published_dir = _publish_reports(out_dir, mount_base, cloned["name"]) if local else out_dir
             total = sum(r.get("findings") or 0 for r in results)
             return jsonify({
                 "repo": cloned,
                 "url": url,
                 "languages": {k: v for k, v in langs.most_common()},
-                "output_dir": out_dir,
+                "output_dir": published_dir,
+                "scanned_on": "local-disk" if local else "mount",
                 "tools_run": [r["tool"] for r in results],
                 "total_findings": total,
                 "results": results,
