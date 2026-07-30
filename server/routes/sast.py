@@ -38,6 +38,29 @@ def _safe_args(additional_args: str) -> str:
 
 logger = logging.getLogger(__name__)
 
+import os as _os
+
+
+def _grep_perf_flags(extra: str) -> str:
+    """Smart defaults so a big scan uses all cores, stays under the memory cap,
+    and can't hang on a pathological file. Only adds a flag the caller omitted."""
+    from config import MAX_PROCESS_WORKERS, SCAN_MEMORY_MAX_MB
+    flags = []
+    has = lambda f: (f in extra)
+    if not has("--jobs") and not has("-j "):
+        per = 512  # MB per worker
+        jobs = max(1, min(_os.cpu_count() or 4, MAX_PROCESS_WORKERS))
+        # keep jobs * per-worker memory under ~80% of the scan scope -> no OOM
+        jobs = max(1, min(jobs, int(SCAN_MEMORY_MAX_MB * 0.8) // per))
+        flags.append(f"--jobs {jobs}")
+        if not has("--max-memory"):
+            flags.append(f"--max-memory {per}")
+    if not has("--timeout"):
+        flags.append("--timeout 10 --timeout-threshold 3")
+    if not has("--metrics"):
+        flags.append("--metrics=off")
+    return " ".join(flags)
+
 
 def _opengrep_scan(params: Dict[str, Any]) -> Dict[str, Any]:
     target = params.get("target", ".")
@@ -48,16 +71,35 @@ def _opengrep_scan(params: Dict[str, Any]) -> Dict[str, Any]:
     additional_args = params.get("additional_args", "")
     resolved_target = validate_scan_target(target)
     engine = resolve_grep_engine()
-    command = f"{engine} scan --config={shlex.quote(config)}"
-    if lang:
-        command += f" --lang={shlex.quote(lang)}"
-    if severity:
-        command += f" --severity={shlex.quote(severity)}"
-    command += f" --{shlex.quote(output_format)}"
-    if additional_args:
-        command += f" {_safe_args(additional_args)}"
-    command += f" {shlex.quote(resolved_target)}"
-    result = execute_command(command, timeout=OPENGREP_TIMEOUT)
+    safe_extra = _safe_args(additional_args)
+    perf = _grep_perf_flags(safe_extra)
+    # Opt-in process-level sharding for very large trees (params["parallel"]=true).
+    pr = None
+    if params.get("parallel"):
+        try:
+            from parallel_grep import run_parallel_grep_scan
+            pr = run_parallel_grep_scan(
+                engine=engine, config=config, lang=lang, severity=severity,
+                output_format=output_format, extra_args=safe_extra,
+                resolved_target=resolved_target, timeout=OPENGREP_TIMEOUT)
+        except Exception as e:
+            logger.warning(f"parallel grep fell back to single scan: {e}")
+            pr = None
+    if pr is not None:
+        result = pr
+    else:
+        command = f"{engine} scan --config={shlex.quote(config)}"
+        if lang:
+            command += f" --lang={shlex.quote(lang)}"
+        if severity:
+            command += f" --severity={shlex.quote(severity)}"
+        command += f" --{shlex.quote(output_format)}"
+        if perf:
+            command += f" {perf}"
+        if safe_extra:
+            command += f" {safe_extra}"
+        command += f" {shlex.quote(resolved_target)}"
+        result = execute_command(command, timeout=OPENGREP_TIMEOUT)
     result["original_path"] = target
     result["resolved_path"] = resolved_target
     # Opengrep/Semgrep exit codes:
