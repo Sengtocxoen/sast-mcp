@@ -54,6 +54,12 @@ SAST_RESULTS_DIR = os.environ.get("SAST_RESULTS_DIR", "/mnt/Resola/Security/sast
 # Root of all source repos (mirrors F:/Resola on Windows: Deca/ and IPS/ live here)
 RESOLA_SRC_DIR = os.environ.get("RESOLA_SRC_DIR", "/mnt/Resola")
 
+# The source-repo root is always a valid scan/staging root, even if MOUNT_POINT
+# is left at its generic default. Without this, a reset .env (MOUNT_POINT back to
+# /mnt/work) makes every local-repo scan fail "outside allowed mount roots".
+if RESOLA_SRC_DIR and RESOLA_SRC_DIR.rstrip("/") not in ALLOWED_MOUNTS:
+    ALLOWED_MOUNTS.append(RESOLA_SRC_DIR.rstrip("/"))
+
 # CORS: allow the local dashboard (port 8787) to call this API from the browser
 CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "http://localhost:8787,http://127.0.0.1:8787")
 

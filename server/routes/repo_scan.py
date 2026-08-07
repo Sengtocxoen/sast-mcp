@@ -92,6 +92,31 @@ def _clone(url: str, ref: str, base_dir: str) -> Dict[str, Any]:
     return {"dest": dest, "name": name, "reused": False}
 
 
+def _stage_local(path: str, base_dir: str) -> Dict[str, Any]:
+    """Copy a local/mounted repo to fast local disk before scanning.
+
+    Scanning in place over a vmhgfs/fuse share is ~100x slower (per-file
+    round-trips), so a single sequential copytree — skipping node_modules/.git
+    and other heavy dirs — pays that cost once, then the tool matrix runs on
+    local disk. Always a fresh copy, so the CURRENT working state of the repo
+    (including uncommitted local changes) is what gets scanned.
+    """
+    src = os.path.abspath(path)
+    if not os.path.isdir(src):
+        raise ValueError(f"path is not a directory: {src}")
+    name = _NAME_RE.sub("-", os.path.basename(src.rstrip("/")) or "repo")
+    dest = os.path.join(base_dir, name)
+    os.makedirs(base_dir, exist_ok=True)
+    if os.path.isdir(dest):
+        shutil.rmtree(dest, ignore_errors=True)
+    shutil.copytree(
+        src, dest,
+        ignore=shutil.ignore_patterns(*_SKIP_DIRS),
+        symlinks=False, ignore_dangling_symlinks=True,
+    )
+    return {"dest": dest, "name": name, "reused": False, "source_path": src}
+
+
 def _detect_languages(root: str) -> Counter:
     counts: Counter = Counter()
     for dirpath, dirnames, filenames in os.walk(root):
@@ -248,17 +273,15 @@ def register(app: Flask) -> None:
         try:
             params = request.json or {}
             url = (params.get("url") or "").strip()
-            if not _URL_RE.match(url):
-                return jsonify({"error": "url must be an https URL on github/gitlab/bitbucket/googlesource"}), 400
-            ref = params.get("ref", "")
-            if ref and re.search(r"[^A-Za-z0-9._/-]", ref):
-                return jsonify({"error": "invalid ref"}), 400
+            path = (params.get("path") or "").strip()
+            if not url and not path:
+                return jsonify({"error": "provide either 'path' (a local/mounted repo dir) or 'url' (git https URL)"}), 400
 
-            local = params.get("local", True)
-            # Reports are published here (validated to an allowed mount).
+            # Reports are published to an allowed mount so the user can read them.
             mount_base = validate_scan_target(params.get("base_dir") or _default_base_dir())
-            # Clone+scan on fast local disk by default; publish reports to the mount.
-            base_dir = REPO_SCAN_LOCAL_DIR if local else mount_base
+            # Everything is scanned on fast local disk; only the small JSON reports
+            # get copied back to the mount.
+            base_dir = REPO_SCAN_LOCAL_DIR
             os.makedirs(base_dir, exist_ok=True)
 
             want = {
@@ -267,7 +290,21 @@ def register(app: Flask) -> None:
                 "gosec": params.get("gosec", False),
             }
 
-            cloned = _clone(url, ref, base_dir)
+            if path:
+                # Local-path mode: validate the path is under an allowed mount,
+                # then copy the CURRENT working tree to local disk and scan there.
+                src = validate_scan_target(path)
+                cloned = _stage_local(src, base_dir)
+                origin = {"path": cloned.get("source_path", src)}
+            else:
+                if not _URL_RE.match(url):
+                    return jsonify({"error": "url must be an https URL on github/gitlab/bitbucket/googlesource"}), 400
+                ref = params.get("ref", "")
+                if ref and re.search(r"[^A-Za-z0-9._/-]", ref):
+                    return jsonify({"error": "invalid ref"}), 400
+                cloned = _clone(url, ref, base_dir)
+                origin = {"url": url}
+
             dest = cloned["dest"]
             out_dir = os.path.join(dest, "_sast_reports")
             os.makedirs(out_dir, exist_ok=True)
@@ -279,14 +316,14 @@ def register(app: Flask) -> None:
             plan = _build_plan(langs, dest, out_dir, want)
             results = _run_plan_parallel(plan)
 
-            published_dir = _publish_reports(out_dir, mount_base, cloned["name"]) if local else out_dir
+            published_dir = _publish_reports(out_dir, mount_base, cloned["name"])
             total = sum(r.get("findings") or 0 for r in results)
             return jsonify({
                 "repo": cloned,
-                "url": url,
+                **origin,
                 "languages": {k: v for k, v in langs.most_common()},
                 "output_dir": published_dir,
-                "scanned_on": "local-disk" if local else "mount",
+                "scanned_on": "local-disk",
                 "tools_run": [r["tool"] for r in results],
                 "total_findings": total,
                 "results": results,
