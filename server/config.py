@@ -81,6 +81,21 @@ SCAN_MEMORY_LIMIT_MODE = os.environ.get("SCAN_MEMORY_LIMIT_MODE", "auto").lower(
 MAX_RETRY_ATTEMPTS = int(os.environ.get("MAX_RETRY_ATTEMPTS", 2))
 RETRY_BACKOFF_BASE = float(os.environ.get("RETRY_BACKOFF_BASE", 2.0))
 
+# Repo-scan tool matrix: how many independent scanners (semgrep, bandit,
+# nodejsscan, gitleaks, trivy, ...) run concurrently WITHIN one /api/repo-scan
+# call. They write separate report files and don't depend on each other, so this
+# is a safe parallelism win; the ceiling is host CPU/RAM, so keep it
+# <= MAX_PROCESS_WORKERS. 1 = legacy sequential behavior.
+REPO_SCAN_TOOL_CONCURRENCY = int(os.environ.get("REPO_SCAN_TOOL_CONCURRENCY", min(4, MAX_PROCESS_WORKERS)))
+
+# Native scanner (opengrep/semgrep) per-invocation footprint. Each scan uses
+# OPENGREP_JOBS worker threads at OPENGREP_MAX_MEMORY_MB each. When running many
+# scans in parallel, LOWER OPENGREP_JOBS so they don't oversubscribe the host
+# cores (e.g. OPENGREP_JOBS=2). OPENGREP_JOBS=0 -> auto-size from cores/memory
+# (the legacy behavior).
+OPENGREP_JOBS = int(os.environ.get("OPENGREP_JOBS", 0))
+OPENGREP_MAX_MEMORY_MB = int(os.environ.get("OPENGREP_MAX_MEMORY_MB", 512))
+
 # Sync vs background
 FORCE_SYNC_SCANS = os.environ.get("FORCE_SYNC_SCANS", "1").lower() in ("1", "true", "yes", "y")
 

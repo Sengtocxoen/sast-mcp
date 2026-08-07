@@ -44,14 +44,17 @@ import os as _os
 def _grep_perf_flags(extra: str) -> str:
     """Smart defaults so a big scan uses all cores, stays under the memory cap,
     and can't hang on a pathological file. Only adds a flag the caller omitted."""
-    from config import MAX_PROCESS_WORKERS, SCAN_MEMORY_MAX_MB
+    from config import MAX_PROCESS_WORKERS, SCAN_MEMORY_MAX_MB, OPENGREP_JOBS, OPENGREP_MAX_MEMORY_MB
     flags = []
     has = lambda f: (f in extra)
     if not has("--jobs") and not has("-j "):
-        per = 512  # MB per worker
-        jobs = max(1, min(_os.cpu_count() or 4, MAX_PROCESS_WORKERS))
-        # keep jobs * per-worker memory under ~80% of the scan scope -> no OOM
-        jobs = max(1, min(jobs, int(SCAN_MEMORY_MAX_MB * 0.8) // per))
+        per = OPENGREP_MAX_MEMORY_MB  # MB per worker
+        if OPENGREP_JOBS > 0:
+            jobs = OPENGREP_JOBS  # explicit override — keep parallel scans light
+        else:
+            jobs = max(1, min(_os.cpu_count() or 4, MAX_PROCESS_WORKERS))
+            # keep jobs * per-worker memory under ~80% of the scan scope -> no OOM
+            jobs = max(1, min(jobs, int(SCAN_MEMORY_MAX_MB * 0.8) // per))
         flags.append(f"--jobs {jobs}")
         if not has("--max-memory"):
             flags.append(f"--max-memory {per}")
