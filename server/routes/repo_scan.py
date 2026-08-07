@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import traceback
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List
 
 from flask import Flask, request, jsonify
@@ -140,12 +141,43 @@ def _run_tool(tool: str, command: str, report: str, timeout: int) -> Dict[str, A
 
 
 def _grep_jobs_mem():
-    """Native multi-core sizing: jobs*per-worker-mem stays under ~80% of the cap."""
-    from config import MAX_PROCESS_WORKERS, SCAN_MEMORY_MAX_MB
-    per = 512
+    """Native multi-core sizing: jobs*per-worker-mem stays under ~80% of the cap.
+    Env overrides: OPENGREP_JOBS (0=auto), OPENGREP_MAX_MEMORY_MB."""
+    from config import MAX_PROCESS_WORKERS, SCAN_MEMORY_MAX_MB, OPENGREP_JOBS, OPENGREP_MAX_MEMORY_MB
+    per = OPENGREP_MAX_MEMORY_MB
+    if OPENGREP_JOBS > 0:
+        return OPENGREP_JOBS, per
     jobs = max(1, min(os.cpu_count() or 4, MAX_PROCESS_WORKERS))
     jobs = max(1, min(jobs, int(SCAN_MEMORY_MAX_MB * 0.8) // per))
     return jobs, per
+
+
+def _run_plan_parallel(plan: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Run the independent scanners concurrently — each writes its own report
+    file and has no dependency on the others — bounded by
+    REPO_SCAN_TOOL_CONCURRENCY. Results preserve plan order. This is the main
+    per-repo speedup: semgrep/bandit/gitleaks/trivy no longer run one-after-another.
+    """
+    from config import REPO_SCAN_TOOL_CONCURRENCY
+    if not plan:
+        return []
+    workers = max(1, min(REPO_SCAN_TOOL_CONCURRENCY, len(plan)))
+    if workers == 1:
+        return [_run_tool(p["tool"], p["command"], p["report"], p["timeout"]) for p in plan]
+    results: List[Dict[str, Any]] = [None] * len(plan)  # type: ignore[list-item]
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        fut_to_idx = {
+            ex.submit(_run_tool, p["tool"], p["command"], p["report"], p["timeout"]): i
+            for i, p in enumerate(plan)
+        }
+        for fut in as_completed(fut_to_idx):
+            i = fut_to_idx[fut]
+            try:
+                results[i] = fut.result()
+            except Exception as e:  # a single tool crashing must not sink the repo scan
+                results[i] = {"tool": plan[i]["tool"], "report": plan[i]["report"],
+                              "error": f"runner failed: {e}"}
+    return results
 
 
 def _publish_reports(out_dir: str, mount_base: str, name: str) -> str:
@@ -245,7 +277,7 @@ def register(app: Flask) -> None:
                 return jsonify({"error": "no supported source files detected", "repo": cloned}), 200
 
             plan = _build_plan(langs, dest, out_dir, want)
-            results = [_run_tool(p["tool"], p["command"], p["report"], p["timeout"]) for p in plan]
+            results = _run_plan_parallel(plan)
 
             published_dir = _publish_reports(out_dir, mount_base, cloned["name"]) if local else out_dir
             total = sum(r.get("findings") or 0 for r in results)

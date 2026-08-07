@@ -842,7 +842,26 @@ def run_scan_synchronously(tool_name: str, params: Dict[str, Any], scan_function
     output_file = params.get("output_file") or os.path.join(DEFAULT_OUTPUT_DIR, f"{tool_name}_{started.strftime('%Y%m%d_%H%M%S')}_{job_id[:8]}.json")
     logger.info(f"Starting sync scan {job_id} for {tool_name}")
     try:
-        result = scan_function(params)
+        # Honor MAX_PARALLEL_SCANS in sync mode too. Previously the sync path ran
+        # the scanner directly with no slot gating, so concurrency was bounded
+        # only by Flask worker threads and `max_parallel_scans` was effectively
+        # cosmetic (see /health). Acquiring a slot here makes the knob a real,
+        # tunable cap: up to N sync scans run at once and the rest wait up to
+        # SCAN_WAIT_TIMEOUT — which is exactly what prevents CPU oversubscription
+        # on the host when many repos are scanned in parallel.
+        if not acquire_scan_slot(timeout=SCAN_WAIT_TIMEOUT):
+            return {
+                "success": False,
+                "job_id": job_id,
+                "job_status": "rejected",
+                "error": f"scan queue full: {MAX_PARALLEL_SCANS} scans already active, "
+                         f"waited {SCAN_WAIT_TIMEOUT}s for a free slot",
+                "sync_mode": True,
+            }
+        try:
+            result = scan_function(params)
+        finally:
+            release_scan_slot()
         completed = datetime.now()
         # Check explicit error key only — do NOT rely on `success` flag, because tools like
         # opengrep/semgrep/bandit return exit code 1 when findings are present (not a real error).
