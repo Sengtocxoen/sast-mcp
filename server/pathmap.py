@@ -49,10 +49,20 @@ def _norm_linux(p: str) -> str:
     return os.path.normpath((p or "").strip().replace("\\", "/")).rstrip("/") or "/"
 
 
-# Mount points under these parents are candidates for auto-discovery. Anything
-# else (/, /proc, /usr, ...) is system surface, never a scan target.
-_DISCOVER_PARENTS = [d for d in _env(
-    "AUTO_DISCOVER_PARENTS", "/mnt,/media,/srv,/data,/shared").split(",") if d.strip()]
+_DEFAULT_DISCOVER_PARENTS = "/mnt,/media,/srv,/data,/shared"
+
+
+def _discover_parents() -> List[str]:
+    """Parents under which a mount may be auto-discovered. Anything else
+    (/, /proc, /usr, ...) is system surface, never a scan target.
+
+    Read lazily, not at import: config.py calls load_dotenv() before building the
+    mount table, so an import-time read would ignore AUTO_DISCOVER_PARENTS set in
+    .env and silently fall back to the defaults.
+    """
+    return [d for d in _env("AUTO_DISCOVER_PARENTS", _DEFAULT_DISCOVER_PARENTS).split(",") if d.strip()]
+
+
 # Filesystem types that indicate a shared folder / network mount someone added
 # specifically so it could be scanned.
 _DISCOVER_FSTYPES = {"fuse", "fuse.vmhgfs-fuse", "vmhgfs", "vboxsf", "cifs",
@@ -67,7 +77,7 @@ def _discover_mounts() -> List[str]:
     shows up as an allowed root without editing .env and restarting.
     """
     found: List[str] = []
-    parents = [_norm_linux(p) for p in _DISCOVER_PARENTS]
+    parents = [_norm_linux(p) for p in _discover_parents()]
     try:
         with open("/proc/mounts") as fh:
             for line in fh:

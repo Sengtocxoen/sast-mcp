@@ -296,7 +296,7 @@ def _jsonl_to_json(path: str) -> None:
     """trufflehog emits JSON-lines; the correlator wants one array."""
     try:
         with open(path, errors="replace") as fh:
-            rows = [json.loads(l) for l in fh if l.strip().startswith("{")]
+            rows = [json.loads(line) for line in fh if line.strip().startswith("{")]
     except Exception:
         rows = []
     with open(path, "w") as fh:
@@ -529,7 +529,10 @@ def _build_plan(ctx: Dict[str, Any], dest: str, out_dir: str,
         return os.path.join(out_dir, f"{name}.json")
 
     code_langs = {e for e in langs if e not in _IAC_ONLY_EXT}
-    has = lambda *m: any(k in markers for k in m)
+
+    def has(*names: str) -> bool:
+        """True when the repo carries any of these build-system marker files."""
+        return any(n in markers for n in names)
 
     # --- semgrep/opengrep: union of config packs for all detected languages ---
     if have("semgrep"):

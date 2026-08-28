@@ -5,6 +5,8 @@ All timeouts, paths, and feature flags in one place for easy tuning.
 import os
 import multiprocessing
 
+import pathmap as _pathmap
+
 # Load .env if available
 try:
     from dotenv import load_dotenv
@@ -42,8 +44,6 @@ WINDOWS_BASE = os.environ.get("WINDOWS_BASE", "F:/work")
 # configured source — the legacy WINDOWS_BASE/MOUNT_POINT pair, PATH_MAPPINGS,
 # a mounts.json, explicit ALLOWED_MOUNTS, and auto-discovered shared folders —
 # so adding a second VMware share no longer means editing code. See pathmap.py.
-import pathmap as _pathmap
-
 ALLOWED_MOUNTS = list(_pathmap.get().roots)
 
 # Dashboard integration: where semgrep.json / bandit.json land per project.
