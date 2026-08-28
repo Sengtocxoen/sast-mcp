@@ -94,6 +94,13 @@ RETRY_BACKOFF_BASE = float(os.environ.get("RETRY_BACKOFF_BASE", 2.0))
 # <= MAX_PROCESS_WORKERS. 1 = legacy sequential behavior.
 REPO_SCAN_TOOL_CONCURRENCY = int(os.environ.get("REPO_SCAN_TOOL_CONCURRENCY", min(4, MAX_PROCESS_WORKERS)))
 
+# Total CPU budget for one /api/repo-scan call. The tool matrix is scheduled by
+# WEIGHT, not headcount: semgrep with --jobs 8 counts as 8, gitleaks as 1. The
+# runner keeps the sum of in-flight weights under this number, so many cheap
+# tools can run alongside one expensive one without oversubscribing the host.
+# 0 = auto (cpu_count). Lower this when several repos are scanned concurrently.
+REPO_SCAN_CPU_BUDGET = int(os.environ.get("REPO_SCAN_CPU_BUDGET", 0))
+
 # Native scanner (opengrep/semgrep) per-invocation footprint. Each scan uses
 # OPENGREP_JOBS worker threads at OPENGREP_MAX_MEMORY_MB each. When running many
 # scans in parallel, LOWER OPENGREP_JOBS so they don't oversubscribe the host

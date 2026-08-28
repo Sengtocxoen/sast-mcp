@@ -96,3 +96,82 @@ Every scan tool endpoint returns a **TOON-shaped** response so the AI can easily
 - **toon_result** contains: `format`, `tool`, `job_id`, `analysis` (summary, risk, counts), and `findings` (normalized list, optionally raw). Built in `server/core.response_as_toon()` using `tools/ai_analysis.py` (`analyze_scan_results`, `create_toon_analysis_result`).
 - **Sync Semgrep/Nikto** already return this shape from `run_scan_synchronously`. All other tools (Bearer, Bandit, TruffleHog, Safety, Checkov, Trivy, Nmap, etc.) wrap their raw result with `response_as_toon(tool_name, params, result)` before `jsonify`.
 - On TOON build failure, the response still has `result_format: "toon-analysis"` with a minimal `toon_result` and `raw_result` for debugging.
+
+## 9. Full-coverage repo scan (`POST /api/repo-scan`)
+
+One call stages a repo, detects what it is, runs **every installed tool that
+applies**, and cross-checks the reports into a single ranked finding set.
+
+```bash
+curl -X POST http://kali:6000/api/repo-scan \
+  -H 'Content-Type: application/json' \
+  -d '{"path": "F:/Resola/Deca/my-service"}'
+```
+
+### Tool matrix
+
+Tools are selected by three gates — the language/marker must be present, the
+binary must be installed (`server/tool_registry.py` probes once, cached), and
+the caller must not have switched the group off. Anything skipped is reported in
+`coverage`, never silently dropped.
+
+| Group | Tools | Gate |
+|---|---|---|
+| SAST | semgrep/opengrep, bearer, graudit | any source file |
+| Python | bandit | `.py` |
+| JS/TS | nodejsscan, eslint-security | `.js/.ts/.jsx/.tsx/.vue` |
+| Go | gosec | `.go` |
+| Ruby | brakeman | `.rb` |
+| Secrets | gitleaks, trufflehog | `secrets: true` |
+| Deps | trivy, osv-scanner, safety, pip-audit, npm-audit, dependency-check, snyk | manifest/lockfile present |
+| IaC | checkov, tfsec (or `trivy config`) | `.tf`, Dockerfile, compose, k8s YAML |
+
+Toggles (all default `true` except `snyk`): `secrets`, `deps`, `iac`, `gosec`,
+`bearer`, `graudit`, `eslint`, `snyk`.
+
+### Cross-checking
+
+`server/correlate.py` normalizes every tool's JSON into one schema, then
+clusters findings that describe the same defect:
+
+* **code** findings cluster on file + nearby line (`CORRELATE_LINE_WINDOW`,
+  default 3) + normalized vulnerability category, derived from CWE first and
+  rule/message keywords second — so `bandit:B602` at line 43 and
+  `semgrep:subprocess-shell-true` at line 42 become one finding;
+* **dependency** findings cluster on package + CVE, because file/line is
+  meaningless there — `trivy` and `safety` agreeing on `CVE-2023-1111` in
+  `django` is one finding, not two.
+
+Each cluster is ranked:
+
+| Confidence | Meaning |
+|---|---|
+| `confirmed` | a verified live credential (trufflehog verification) |
+| `corroborated` | two or more independent tools agree |
+| `single_tool` | one tool's claim — triage last |
+
+The response carries `cross_check` (counts, `by_severity`, `by_category`,
+`tool_agreement`) and `top_findings`; the full set is written to
+`<output_dir>/cross_check.json`. Raw per-tool counts stay in `results[]`.
+
+### Performance
+
+* **Staging** uses a streamed `tar` pipe, not a per-file `shutil.copytree` — and
+  `stage: "auto"` (default) skips the copy entirely when the source is already
+  on local disk. Use `"always"` / `"never"` to override.
+* **Scheduling** is weighted, not a flat worker count: `semgrep --jobs 8` counts
+  as 8, `gitleaks` as 1, and the runner keeps the sum of in-flight weights under
+  `REPO_SCAN_CPU_BUDGET` (0 = `cpu_count`). Expensive, long-tailed tools are
+  started first. Lower the budget when scanning several repos concurrently.
+* **Selection** skips uninstalled tools before spawning anything.
+
+### Tuning env vars
+
+| Var | Default | Purpose |
+|---|---|---|
+| `REPO_SCAN_CPU_BUDGET` | `0` (cpu_count) | total in-flight tool weight per repo scan |
+| `REPO_SCAN_TOOL_CONCURRENCY` | `min(4, MAX_PROCESS_WORKERS)` | thread-pool floor |
+| `REPO_SCAN_LOCAL_DIR` | `/var/tmp/sast-repos` | staging + report scratch |
+| `TOOL_PROBE_TTL` | `900` | seconds a tool-availability probe stays cached |
+| `CORRELATE_LINE_WINDOW` | `3` | line drift tolerated when clustering code findings |
+| `OPENGREP_JOBS` | `0` (auto) | lower to 2 when scanning many repos at once |
