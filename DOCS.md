@@ -175,3 +175,78 @@ The response carries `cross_check` (counts, `by_severity`, `by_category`,
 | `TOOL_PROBE_TTL` | `900` | seconds a tool-availability probe stays cached |
 | `CORRELATE_LINE_WINDOW` | `3` | line drift tolerated when clustering code findings |
 | `OPENGREP_JOBS` | `0` (auto) | lower to 2 when scanning many repos at once |
+
+## 10. Mounts and local private-repo scanning
+
+### The problem this replaces
+
+The server understood exactly one client→server mapping,
+`WINDOWS_BASE` → `MOUNT_POINT`. A second VMware shared folder could be added to
+`ALLOWED_MOUNTS` so it passed validation, but nothing could *translate* a client
+path into it — `resolve_windows_path` fell through and returned the Windows
+string unchanged, which then failed validation anyway. `util.py` also gated
+translation on a literal `"F:"` drive letter. In practice every repo had to live
+under one share.
+
+`server/pathmap.py` now resolves across any number of mounts, longest-prefix
+first, handling `F:/x`, `f:/x`, `/f:/x` (Git Bash) and backslashes.
+
+### Configuring mounts
+
+Sources are additive, in this order:
+
+| Source | Example | Notes |
+|---|---|---|
+| `WINDOWS_BASE` + `MOUNT_POINT` | `F:/work` → `/mnt/work` | the original pair, still honored |
+| `PATH_MAPPINGS` | `F:/Resola=/mnt/Resola,D:/code=/mnt/code` | comma-separated `CLIENT=SERVER` |
+| `MOUNTS_CONFIG` | `/opt/sast-mcp/mounts.json` | see `mounts.json.example`; defaults to `./mounts.json` |
+| `ALLOWED_MOUNTS` | `/srv/repos,/home/kali/projects` | server roots with no client twin |
+| auto-discovery | `AUTO_DISCOVER_MOUNTS=1` (default) | shared folders under `/mnt`, `/media`, `/srv`, `/data` |
+
+Auto-discovery is what makes "I mounted a new folder in VMware" just work: the
+share becomes a scannable root with no config change. It only accepts real mount
+points of shared-folder/network type under `AUTO_DISCOVER_PARENTS`, so system
+paths are never included, and `validate_scan_target` still rejects anything
+outside the resulting root set.
+
+```bash
+# after mounting a new share — no restart needed
+curl -X POST http://kali:6000/api/util/mounts/reload
+```
+
+### Inspecting mounts
+
+```bash
+curl http://kali:6000/api/util/mounts
+```
+
+Returns each mapping with an `exists` flag, the allowed roots, what was
+auto-discovered, and which config sources are active. This is the first thing to
+check when a scan fails with *"outside the allowed mount roots"*. A compact
+version is also in `GET /health` under `mounts`.
+
+### Finding repos to scan
+
+```bash
+# every repo on every mounted share
+curl -X POST http://kali:6000/api/util/find-repos -d '{}' -H 'Content-Type: application/json'
+
+# one share, including non-git project dirs
+curl -X POST http://kali:6000/api/util/find-repos \
+  -H 'Content-Type: application/json' \
+  -d '{"root": "F:/Resola", "require_git": false}'
+```
+
+Each result carries a `path` that can be posted straight to `/api/repo-scan`,
+plus a sampled language mix and file count. Language sampling is capped per repo
+so listing a few hundred repos stays interactive; `include_git_info: true` adds
+branch and last commit at the cost of one git call per repo.
+
+MCP tools: `find_repos`, `list_mounts`, `reload_mounts`.
+
+### Removed hardcoding
+
+`SAST_RESULTS_DIR` and the source-repo root no longer default to one
+deployment's folder names. They derive from `MOUNT_POINT`, and are overridden by
+`SAST_RESULTS_DIR` / `REPO_SRC_DIR`. `RESOLA_SRC_DIR` is still read as an alias,
+so existing `.env` files keep working.

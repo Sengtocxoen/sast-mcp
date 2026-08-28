@@ -38,27 +38,31 @@ DEPENDENCY_CHECK_PATH = os.environ.get("DEPENDENCY_CHECK_PATH", "dependency-chec
 MOUNT_POINT = os.environ.get("MOUNT_POINT", "/mnt/work")
 WINDOWS_BASE = os.environ.get("WINDOWS_BASE", "F:/work")
 
-# Extra mount roots that scan targets may live under, beyond MOUNT_POINT.
-# Comma-separated Linux paths. Lets one server scan several VMware shared
-# folders (e.g. /mnt/Resola and /mnt/SidePrs) without loosening validation to
-# all of /mnt. MOUNT_POINT is always included. Backward-compatible default.
-ALLOWED_MOUNTS = []
-for _m in ([MOUNT_POINT] + os.environ.get("ALLOWED_MOUNTS", "").split(",")):
-    _m = _m.strip().rstrip("/")
-    if _m and _m not in ALLOWED_MOUNTS:
-        ALLOWED_MOUNTS.append(_m)
+# Mount roots that scan targets may live under. Assembled by pathmap from every
+# configured source — the legacy WINDOWS_BASE/MOUNT_POINT pair, PATH_MAPPINGS,
+# a mounts.json, explicit ALLOWED_MOUNTS, and auto-discovered shared folders —
+# so adding a second VMware share no longer means editing code. See pathmap.py.
+import pathmap as _pathmap
 
-# Dashboard integration: where semgrep.json / bandit.json land per project
-# Mirrors F:/Resola/Security/sast-results on Windows
-SAST_RESULTS_DIR = os.environ.get("SAST_RESULTS_DIR", "/mnt/Resola/Security/sast-results")
-# Root of all source repos (mirrors F:/Resola on Windows: Deca/ and IPS/ live here)
-RESOLA_SRC_DIR = os.environ.get("RESOLA_SRC_DIR", "/mnt/Resola")
+ALLOWED_MOUNTS = list(_pathmap.get().roots)
+
+# Dashboard integration: where semgrep.json / bandit.json land per project.
+# Defaults derive from the mount point rather than one deployment's folder names;
+# SAST_RESULTS_DIR / REPO_SRC_DIR override them.
+SAST_RESULTS_DIR = os.environ.get(
+    "SAST_RESULTS_DIR", os.path.join(MOUNT_POINT, "Security", "sast-results"))
+# Root under which source repos live. RESOLA_SRC_DIR is the old name, still read
+# so existing .env files keep working.
+REPO_SRC_DIR = os.environ.get("REPO_SRC_DIR") or os.environ.get("RESOLA_SRC_DIR") or MOUNT_POINT
+RESOLA_SRC_DIR = REPO_SRC_DIR  # backward-compatible alias
 
 # The source-repo root is always a valid scan/staging root, even if MOUNT_POINT
 # is left at its generic default. Without this, a reset .env (MOUNT_POINT back to
 # /mnt/work) makes every local-repo scan fail "outside allowed mount roots".
-if RESOLA_SRC_DIR and RESOLA_SRC_DIR.rstrip("/") not in ALLOWED_MOUNTS:
-    ALLOWED_MOUNTS.append(RESOLA_SRC_DIR.rstrip("/"))
+for _extra in (REPO_SRC_DIR, SAST_RESULTS_DIR):
+    _e = (_extra or "").rstrip("/")
+    if _e and _e not in ALLOWED_MOUNTS:
+        ALLOWED_MOUNTS.append(_e)
 
 # CORS: allow the local dashboard (port 8787) to call this API from the browser
 CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "http://localhost:8787,http://127.0.0.1:8787")
