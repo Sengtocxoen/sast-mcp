@@ -1243,6 +1243,68 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
         return await sast_client.safe_post("api/util/scan-project-structure", data)
 
     @mcp.tool()
+    async def find_repos(
+        root: str = "",
+        max_depth: int = 3,
+        limit: int = 500,
+        require_git: bool = True,
+        include_git_info: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Discover repositories on the mounted shares, ready to scan.
+
+        Use this FIRST when asked to scan "our repos" or "everything under X" —
+        it removes the need to know or type each path. Every returned repo's
+        'path' can be passed straight to repo_scan.
+
+        Args:
+            root: Where to search (client or server path). Empty = every mounted share.
+            max_depth: How deep to descend looking for repos (1-6, default: 3)
+            limit: Max repos to return (default: 500)
+            require_git: Only list dirs with a .git (default: True). False also
+                         lists project dirs identified by package.json/go.mod/etc.
+            include_git_info: Add branch + last commit per repo. Costs one git
+                              call per repo, so leave off for large listings.
+
+        Returns:
+            - repos[].path: path to hand to repo_scan
+            - repos[].name, .languages, .source_files, .has_git
+            - total, roots_searched, truncated
+        """
+        data = {"max_depth": max_depth, "limit": limit,
+                "require_git": require_git, "include_git_info": include_git_info}
+        if root:
+            data["root"] = root
+        return await sast_client.safe_post("api/util/find-repos", data)
+
+    @mcp.tool()
+    async def list_mounts() -> Dict[str, Any]:
+        """
+        Show the server's path-mapping table and allowed scan roots.
+
+        Call this when a scan fails with "outside the allowed mount roots", or
+        when a path doesn't resolve: it reports which client->server mappings are
+        configured, which targets actually exist on disk, and which shares were
+        auto-discovered.
+
+        Returns:
+            - mappings[]: {client, server, exists}
+            - allowed_roots[]: {path, exists}
+            - auto_discovered[]: shares found without explicit config
+            - sources: which config mechanisms are active
+        """
+        return await sast_client.safe_get("api/util/mounts")
+
+    @mcp.tool()
+    async def reload_mounts() -> Dict[str, Any]:
+        """
+        Re-read mount configuration and re-discover shares, without restarting
+        the server. Call this after mounting a new shared folder so its repos
+        become scannable immediately.
+        """
+        return await sast_client.safe_post("api/util/mounts/reload", {})
+
+    @mcp.tool()
     async def get_scan_statistics() -> Dict[str, Any]:
         """
         Get current parallel scan statistics from the server.

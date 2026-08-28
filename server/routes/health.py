@@ -3,6 +3,8 @@ Health check route: GET /health with tool availability and scan stats.
 """
 import logging
 import shutil
+
+import pathmap
 from flask import Flask, jsonify
 
 from core import (
@@ -126,6 +128,7 @@ def register(app: Flask) -> None:
         )
 
         process_health = check_process_health()
+        _pm = pathmap.get().describe()
 
         with scan_stats_lock:
             scan_statistics = dict(scan_stats)
@@ -148,6 +151,16 @@ def register(app: Flask) -> None:
                     if FORCE_SYNC_SCANS
                     else "Scans run in background (may hang with semaphore issues)"
                 ),
+            },
+            # Compact mount view: the most common scan failure is a path that
+            # resolves outside the allowed roots, and this says at a glance which
+            # shares are configured and which are actually mounted.
+            "mounts": {
+                "mappings": {m["client"]: m["server"] for m in _pm["mappings"]},
+                "allowed_roots": [r["path"] for r in _pm["allowed_roots"]],
+                "missing_roots": [r["path"] for r in _pm["allowed_roots"] if not r["exists"]],
+                "auto_discovered": _pm["auto_discovered"],
+                "detail_url": "/api/util/mounts",
             },
             "multiprocessing_enabled": USE_MULTIPROCESSING,
             "max_parallel_scans": MAX_PARALLEL_SCANS,

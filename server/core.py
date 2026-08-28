@@ -7,7 +7,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import shlex
 import shutil
 import subprocess
@@ -24,6 +23,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import psutil
+
+import pathmap
 
 from config import (
     ALLOWED_MOUNTS,
@@ -360,26 +361,18 @@ job_manager = JobManager(max_workers=MAX_WORKERS)
 # Path resolution
 # ---------------------------------------------------------------------------
 def resolve_windows_path(windows_path: str) -> str:
-    normalized = windows_path.replace("\\", "/")
-    base = WINDOWS_BASE.replace("\\", "/").rstrip("/")
-    mount = MOUNT_POINT.rstrip("/")
-    patterns = [
-        (rf"^{re.escape(base)}/", f"{mount}/"),
-        (rf"^{re.escape(base)}$", mount),
-        (rf"^/{re.escape(base.lower())}/", f"{mount}/"),
-        (rf"^/{re.escape(base.lower())}$", mount),
-        (rf"^{re.escape(base.lower())}/", f"{mount}/"),
-        (rf"^{re.escape(base.lower())}$", mount),
-    ]
-    for pattern, repl in patterns:
-        if re.match(pattern, normalized, re.IGNORECASE):
-            linux_path = re.sub(pattern, repl, normalized, flags=re.IGNORECASE)
-            return linux_path
-    if normalized.startswith(mount):
-        return normalized
-    if normalized.startswith("/") and os.path.exists(normalized):
-        return normalized
-    return windows_path
+    """Client path -> server path, across every configured mount.
+
+    Delegates to pathmap, which handles N mappings by longest prefix instead of
+    the single WINDOWS_BASE->MOUNT_POINT pair this used to hardcode. Kept under
+    the original name and signature: every route calls it.
+    """
+    return pathmap.get().to_linux(windows_path)
+
+
+def to_client_path(linux_path: str) -> str:
+    """Server path -> the path the client should display or send back."""
+    return pathmap.get().to_client(linux_path)
 
 
 def validate_scan_target(user_path: str) -> str:
@@ -396,7 +389,10 @@ def validate_scan_target(user_path: str) -> str:
     for mount in ALLOWED_MOUNTS:
         mount_norm = os.path.normpath(mount)
         if norm == mount_norm or norm.startswith(mount_norm + os.sep):
-            return resolved
+            # Return the NORMALIZED path: 'F:/x/../x/repo' is legitimate, but
+            # handing tools a path with '..' still in it makes every downstream
+            # prefix comparison (report paths, skip-dirs, staging) unreliable.
+            return norm
     raise ValueError(
         f"Scan target {user_path!r} resolves to {norm!r}, which is outside "
         f"the allowed mount roots ({', '.join(ALLOWED_MOUNTS)})"

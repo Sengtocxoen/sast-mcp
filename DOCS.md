@@ -96,3 +96,157 @@ Every scan tool endpoint returns a **TOON-shaped** response so the AI can easily
 - **toon_result** contains: `format`, `tool`, `job_id`, `analysis` (summary, risk, counts), and `findings` (normalized list, optionally raw). Built in `server/core.response_as_toon()` using `tools/ai_analysis.py` (`analyze_scan_results`, `create_toon_analysis_result`).
 - **Sync Semgrep/Nikto** already return this shape from `run_scan_synchronously`. All other tools (Bearer, Bandit, TruffleHog, Safety, Checkov, Trivy, Nmap, etc.) wrap their raw result with `response_as_toon(tool_name, params, result)` before `jsonify`.
 - On TOON build failure, the response still has `result_format: "toon-analysis"` with a minimal `toon_result` and `raw_result` for debugging.
+
+## 9. Full-coverage repo scan (`POST /api/repo-scan`)
+
+One call stages a repo, detects what it is, runs **every installed tool that
+applies**, and cross-checks the reports into a single ranked finding set.
+
+```bash
+curl -X POST http://kali:6000/api/repo-scan \
+  -H 'Content-Type: application/json' \
+  -d '{"path": "F:/Resola/Deca/my-service"}'
+```
+
+### Tool matrix
+
+Tools are selected by three gates — the language/marker must be present, the
+binary must be installed (`server/tool_registry.py` probes once, cached), and
+the caller must not have switched the group off. Anything skipped is reported in
+`coverage`, never silently dropped.
+
+| Group | Tools | Gate |
+|---|---|---|
+| SAST | semgrep/opengrep, bearer, graudit | any source file |
+| Python | bandit | `.py` |
+| JS/TS | nodejsscan, eslint-security | `.js/.ts/.jsx/.tsx/.vue` |
+| Go | gosec | `.go` |
+| Ruby | brakeman | `.rb` |
+| Secrets | gitleaks, trufflehog | `secrets: true` |
+| Deps | trivy, osv-scanner, safety, pip-audit, npm-audit, dependency-check, snyk | manifest/lockfile present |
+| IaC | checkov, tfsec (or `trivy config`) | `.tf`, Dockerfile, compose, k8s YAML |
+
+Toggles (all default `true` except `snyk`): `secrets`, `deps`, `iac`, `gosec`,
+`bearer`, `graudit`, `eslint`, `snyk`.
+
+### Cross-checking
+
+`server/correlate.py` normalizes every tool's JSON into one schema, then
+clusters findings that describe the same defect:
+
+* **code** findings cluster on file + nearby line (`CORRELATE_LINE_WINDOW`,
+  default 3) + normalized vulnerability category, derived from CWE first and
+  rule/message keywords second — so `bandit:B602` at line 43 and
+  `semgrep:subprocess-shell-true` at line 42 become one finding;
+* **dependency** findings cluster on package + CVE, because file/line is
+  meaningless there — `trivy` and `safety` agreeing on `CVE-2023-1111` in
+  `django` is one finding, not two.
+
+Each cluster is ranked:
+
+| Confidence | Meaning |
+|---|---|
+| `confirmed` | a verified live credential (trufflehog verification) |
+| `corroborated` | two or more independent tools agree |
+| `single_tool` | one tool's claim — triage last |
+
+The response carries `cross_check` (counts, `by_severity`, `by_category`,
+`tool_agreement`) and `top_findings`; the full set is written to
+`<output_dir>/cross_check.json`. Raw per-tool counts stay in `results[]`.
+
+### Performance
+
+* **Staging** uses a streamed `tar` pipe, not a per-file `shutil.copytree` — and
+  `stage: "auto"` (default) skips the copy entirely when the source is already
+  on local disk. Use `"always"` / `"never"` to override.
+* **Scheduling** is weighted, not a flat worker count: `semgrep --jobs 8` counts
+  as 8, `gitleaks` as 1, and the runner keeps the sum of in-flight weights under
+  `REPO_SCAN_CPU_BUDGET` (0 = `cpu_count`). Expensive, long-tailed tools are
+  started first. Lower the budget when scanning several repos concurrently.
+* **Selection** skips uninstalled tools before spawning anything.
+
+### Tuning env vars
+
+| Var | Default | Purpose |
+|---|---|---|
+| `REPO_SCAN_CPU_BUDGET` | `0` (cpu_count) | total in-flight tool weight per repo scan |
+| `REPO_SCAN_TOOL_CONCURRENCY` | `min(4, MAX_PROCESS_WORKERS)` | thread-pool floor |
+| `REPO_SCAN_LOCAL_DIR` | `/var/tmp/sast-repos` | staging + report scratch |
+| `TOOL_PROBE_TTL` | `900` | seconds a tool-availability probe stays cached |
+| `CORRELATE_LINE_WINDOW` | `3` | line drift tolerated when clustering code findings |
+| `OPENGREP_JOBS` | `0` (auto) | lower to 2 when scanning many repos at once |
+
+## 10. Mounts and local private-repo scanning
+
+### The problem this replaces
+
+The server understood exactly one client→server mapping,
+`WINDOWS_BASE` → `MOUNT_POINT`. A second VMware shared folder could be added to
+`ALLOWED_MOUNTS` so it passed validation, but nothing could *translate* a client
+path into it — `resolve_windows_path` fell through and returned the Windows
+string unchanged, which then failed validation anyway. `util.py` also gated
+translation on a literal `"F:"` drive letter. In practice every repo had to live
+under one share.
+
+`server/pathmap.py` now resolves across any number of mounts, longest-prefix
+first, handling `F:/x`, `f:/x`, `/f:/x` (Git Bash) and backslashes.
+
+### Configuring mounts
+
+Sources are additive, in this order:
+
+| Source | Example | Notes |
+|---|---|---|
+| `WINDOWS_BASE` + `MOUNT_POINT` | `F:/work` → `/mnt/work` | the original pair, still honored |
+| `PATH_MAPPINGS` | `F:/Resola=/mnt/Resola,D:/code=/mnt/code` | comma-separated `CLIENT=SERVER` |
+| `MOUNTS_CONFIG` | `/opt/sast-mcp/mounts.json` | see `mounts.json.example`; defaults to `./mounts.json` |
+| `ALLOWED_MOUNTS` | `/srv/repos,/home/kali/projects` | server roots with no client twin |
+| auto-discovery | `AUTO_DISCOVER_MOUNTS=1` (default) | shared folders under `/mnt`, `/media`, `/srv`, `/data` |
+
+Auto-discovery is what makes "I mounted a new folder in VMware" just work: the
+share becomes a scannable root with no config change. It only accepts real mount
+points of shared-folder/network type under `AUTO_DISCOVER_PARENTS`, so system
+paths are never included, and `validate_scan_target` still rejects anything
+outside the resulting root set.
+
+```bash
+# after mounting a new share — no restart needed
+curl -X POST http://kali:6000/api/util/mounts/reload
+```
+
+### Inspecting mounts
+
+```bash
+curl http://kali:6000/api/util/mounts
+```
+
+Returns each mapping with an `exists` flag, the allowed roots, what was
+auto-discovered, and which config sources are active. This is the first thing to
+check when a scan fails with *"outside the allowed mount roots"*. A compact
+version is also in `GET /health` under `mounts`.
+
+### Finding repos to scan
+
+```bash
+# every repo on every mounted share
+curl -X POST http://kali:6000/api/util/find-repos -d '{}' -H 'Content-Type: application/json'
+
+# one share, including non-git project dirs
+curl -X POST http://kali:6000/api/util/find-repos \
+  -H 'Content-Type: application/json' \
+  -d '{"root": "F:/Resola", "require_git": false}'
+```
+
+Each result carries a `path` that can be posted straight to `/api/repo-scan`,
+plus a sampled language mix and file count. Language sampling is capped per repo
+so listing a few hundred repos stays interactive; `include_git_info: true` adds
+branch and last commit at the cost of one git call per repo.
+
+MCP tools: `find_repos`, `list_mounts`, `reload_mounts`.
+
+### Removed hardcoding
+
+`SAST_RESULTS_DIR` and the source-repo root no longer default to one
+deployment's folder names. They derive from `MOUNT_POINT`, and are overridden by
+`SAST_RESULTS_DIR` / `REPO_SRC_DIR`. `RESOLA_SRC_DIR` is still read as an alias,
+so existing `.env` files keep working.

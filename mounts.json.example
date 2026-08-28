@@ -1,0 +1,15 @@
+{
+  "_comment": "Copy to mounts.json (or point MOUNTS_CONFIG at it). Every mapping is CLIENT_PATH -> SERVER_PATH. Use this instead of PATH_MAPPINGS when you have more than a couple of shares.",
+
+  "mappings": {
+    "F:/work":   "/mnt/work",
+    "F:/Resola": "/mnt/Resola",
+    "D:/code":   "/mnt/code"
+  },
+
+  "_comment_roots": "Server paths that are scannable but have no client-side twin (repos cloned directly on the Kali VM, for example).",
+  "allowed_roots": [
+    "/srv/repos",
+    "/home/kali/projects"
+  ]
+}
