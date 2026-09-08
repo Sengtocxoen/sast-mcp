@@ -517,6 +517,64 @@ def normalize(tool: str, report_path: str, repo_root: str) -> List[Dict[str, Any
 # ---------------------------------------------------------------------------
 # correlation
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Tool independence
+#
+# Ranking a finding higher because two tools agreed is only sound when the tools
+# are INDEPENDENT. Two engines that share rule lineage, or that pattern-match the
+# same syntax for different reasons, will agree constantly and their agreement
+# carries no more information than either one alone. Measured over a 136-repo
+# sweep, 87% of "corroborated" findings came from such pairs — 1,417 dropped to
+# 180 once they were discounted, and the ranking had put 769 Django template
+# matches above 55 committed secrets.
+#
+# Two mechanisms, because the problem occurs at two levels.
+# ---------------------------------------------------------------------------
+
+# 1. Tools that share rule provenance, per domain. Same family == one voice.
+#    trivy absorbed tfsec upstream, and carries the same IaC policy family as
+#    checkov, so on IaC these three are close to a single engine. On dependency
+#    findings trivy is independent of npm-audit, hence the per-domain split.
+_TOOL_FAMILY: Dict[str, Dict[str, str]] = {
+    DOMAIN_IAC: {"trivy": "iac-policy", "tfsec": "iac-policy", "checkov": "iac-policy"},
+}
+
+# 2. Specific rule pairs that fire on the same text for unrelated reasons.
+#    nodejsscan's squirrelly_template is a JavaScript template-engine rule;
+#    semgrep's is a Flask/Jinja rule. Both match `{{ }}` in Django .html files.
+#    Neither validates the other.
+_CORRELATED_RULES: Tuple[Tuple[str, str], ...] = (
+    ("nodejsscan:squirrelly_template", "semgrep:python.flask.security.xss.audit."
+     "template-unescaped-with-safe.template-unescaped-with-safe"),
+)
+
+
+def _independence(group: List[Dict[str, Any]], tools: List[str], rules: List[str]) -> Tuple[int, str]:
+    """How many genuinely independent engines back this cluster, and why if reduced."""
+    domain = group[0]["domain"] if group else ""
+    families = _TOOL_FAMILY.get(domain, {})
+
+    voices = {families.get(t, t) for t in tools}
+    note = ""
+
+    if len(voices) < len(tools):
+        collapsed = sorted({t for t in tools if t in families})
+        note = (f"{'+'.join(collapsed)} share rule provenance on {domain} "
+                f"(trivy absorbed tfsec; checkov shares its policy family), "
+                f"so they count as one engine")
+
+    rule_set = set(rules)
+    for a, b in _CORRELATED_RULES:
+        if a in rule_set and b in rule_set:
+            voices = {"correlated-rule-pair"}
+            note = (f"{a.split(':')[0]} and {b.split(':')[0]} matched the same syntax via "
+                    f"unrelated rules ({a.split(':')[1][:40]} vs a Flask/Jinja rule); "
+                    f"not independent confirmation")
+            break
+
+    return len(voices), note
+
+
 def _cluster_key(f: Dict[str, Any]) -> Tuple:
     """The identity a finding is matched on, per domain."""
     if f["domain"] == DOMAIN_DEP:
@@ -532,6 +590,12 @@ def _merge(group: List[Dict[str, Any]]) -> Dict[str, Any]:
     # Prefer the entry that carries the richest context as the representative.
     lead = max(group, key=lambda f: (len(f.get("cwe") or []), len(f.get("message") or "")))
     verified = any(f.get("verified") for f in group)
+    rules = sorted({f"{f['tool']}:{f['rule']}" for f in group if f.get("rule")})
+    # Corroboration is counted in INDEPENDENT engines, not raw tool count, so that
+    # engines sharing rule lineage (or matching the same syntax by coincidence) do
+    # not manufacture agreement. tool_count is kept alongside so the reduction is
+    # visible rather than silently applied.
+    independent, note = _independence(group, tools, rules)
     return {
         "file": lead["file"], "line": lead["line"], "domain": lead["domain"],
         "category": lead["category"], "severity": worst["severity"],
@@ -539,9 +603,11 @@ def _merge(group: List[Dict[str, Any]]) -> Dict[str, Any]:
         "package": lead.get("package", ""), "version": lead.get("version", ""),
         "vuln_id": lead.get("vuln_id", ""),
         "tools": tools, "tool_count": len(tools),
-        "rules": sorted({f"{f['tool']}:{f['rule']}" for f in group if f.get("rule")}),
+        "independent_count": independent,
+        "correlation_note": note,
+        "rules": rules,
         "verified": verified,
-        "confidence": "confirmed" if verified else ("corroborated" if len(tools) > 1 else "single_tool"),
+        "confidence": "confirmed" if verified else ("corroborated" if independent > 1 else "single_tool"),
     }
 
 
@@ -588,11 +654,23 @@ def cross_check(tool_results: List[Dict[str, Any]], repo_root: str) -> Dict[str,
             for b in c["tools"][i + 1:]:
                 agreement[f"{a}+{b}"] += 1
 
+    # Clusters where more than one tool fired but the tools were not independent.
+    # Reported explicitly: silently dropping them would hide why a count changed,
+    # and these are exactly the findings a reader would otherwise over-trust.
+    discounted = [c for c in clusters
+                  if c.get("tool_count", 1) > 1 and c.get("independent_count", 1) < 2]
+    discount_reasons: Dict[str, int] = defaultdict(int)
+    for c in discounted:
+        if c.get("correlation_note"):
+            discount_reasons["+".join(c["tools"])] += 1
+
     return {
         "normalized_findings": len(raw),
         "unique_findings": len(clusters),
         "duplicates_collapsed": len(raw) - len(clusters),
         "corroborated_count": len(corroborated),
+        "agreement_discounted": len(discounted),
+        "agreement_discounted_by_pair": dict(sorted(discount_reasons.items(), key=lambda kv: -kv[1])),
         "by_severity": by_sev,
         "by_category": dict(sorted(by_cat.items(), key=lambda kv: -kv[1])),
         "by_tool": per_tool,

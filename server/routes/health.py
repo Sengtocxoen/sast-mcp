@@ -3,9 +3,10 @@ Health check route: GET /health with tool availability and scan stats.
 """
 import logging
 import shutil
+from typing import Any, Dict
 
 import pathmap
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 
 from core import (
     execute_command, check_process_health, scan_stats_lock, scan_stats,
@@ -44,6 +45,12 @@ def _tool_available(tool: str, check_cmd: str) -> bool:
     flags, tools that exit non-zero on version, and venv-installed binaries whose
     version subprocess env differs. Falls back to running the version command only
     when the binary name cannot be resolved on PATH.
+
+    NOTE: this answers "is it installed", NOT "does it work". A binary that is
+    present but crashes reports available here. See `_tool_functional()` and the
+    `?verify=1` option on /health, added after a corrupt trufflehog reported
+    healthy through an entire 136-repo sweep while contributing zero findings to
+    every one of them.
     """
     candidates = (_binary_of(check_cmd),) + _TOOL_ALIASES.get(tool, ())
     for binary in candidates:
@@ -53,6 +60,39 @@ def _tool_available(tool: str, check_cmd: str) -> bool:
         return bool(execute_command(check_cmd, timeout=10).get("success"))
     except Exception:
         return False
+
+
+def _tool_functional(tool: str, check_cmd: str) -> Dict[str, Any]:
+    """Actually run the tool and report whether it executed.
+
+    Deliberately NOT part of the default /health response: this spawns one
+    subprocess per tool, and /health is polled. Opt in with `?verify=1`.
+
+    A crash is distinguished from a non-zero exit, because many scanners exit
+    non-zero simply to report findings. Only a signal death (or the shell's
+    128+N encoding of one) means the binary is broken.
+    """
+    if not _tool_available(tool, check_cmd):
+        return {"status": "missing"}
+    try:
+        r = execute_command(check_cmd, timeout=20)
+    except Exception as e:  # noqa: BLE001
+        return {"status": "error", "detail": str(e)[:120]}
+
+    rc = r.get("return_code")
+    blob = f"{r.get('stdout', '')}{r.get('stderr', '')}".lower()
+
+    # 128+N is a signal death. 135 == SIGBUS, which is what a truncated or
+    # architecture-mismatched binary does.
+    if isinstance(rc, int) and rc > 128:
+        return {"status": "broken", "return_code": rc,
+                "detail": f"killed by signal {rc - 128} (binary likely corrupt)"}
+    if any(s in blob for s in ("bus error", "segmentation fault", "core dumped",
+                               "cannot execute binary", "exec format error")):
+        return {"status": "broken", "return_code": rc, "detail": blob.strip()[:120]}
+    if r.get("timed_out"):
+        return {"status": "slow", "return_code": rc, "detail": "no response within 20s"}
+    return {"status": "ok", "return_code": rc}
 from config import (
     DEPENDENCY_CHECK_PATH,
     FORCE_SYNC_SCANS,
@@ -127,6 +167,15 @@ def register(app: Flask) -> None:
             1 for tool in kali_tools.keys() if tools_status.get(tool, False)
         )
 
+        # Opt-in functional verification. Off by default because it costs one
+        # subprocess per tool; on when a caller actually wants to know that the
+        # binaries run, not merely that they exist.
+        tools_functional: Dict[str, Any] = {}
+        if request.args.get("verify") in ("1", "true", "yes"):
+            for group in (essential_tools, additional_tools, kali_tools):
+                for tool, check_cmd in group.items():
+                    tools_functional[tool] = _tool_functional(tool, check_cmd)
+
         process_health = check_process_health()
         _pm = pathmap.get().describe()
 
@@ -137,6 +186,12 @@ def register(app: Flask) -> None:
             "status": "healthy",
             "message": "SAST Tools API Server is running",
             "tools_status": tools_status,
+            # Present only with ?verify=1. `tools_status` says installed;
+            # this says it actually runs.
+            **({"tools_functional": tools_functional,
+                "tools_broken": sorted(t for t, v in tools_functional.items()
+                                       if v.get("status") == "broken")}
+               if tools_functional else {}),
             "all_essential_tools_available": all_essential_available,
             "total_tools_available": available_count,
             "total_tools_count": total_count,
