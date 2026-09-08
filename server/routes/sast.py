@@ -241,16 +241,21 @@ def register(app: Flask) -> None:
             additional_args = params.get("additional_args", "")
             resolved_target = validate_scan_target(target)
             command = f"bandit -r {shlex.quote(resolved_target)} -f {shlex.quote(output_format)}"
+            # bandit's -l/-i are COUNT flags (-l/-ll/-lll), not value-taking options, so
+            # `-l HIGH` leaves HIGH as a positional target and bandit aborts with
+            # "unrecognized arguments: HIGH" -> exit non-zero, empty stdout, and the caller
+            # sees a successful-looking "0 findings" result. The value form is
+            # --severity-level / --confidence-level {all,low,medium,high}.
             if severity_level:
-                sev = severity_level.upper()
-                if sev not in ("LOW", "MEDIUM", "HIGH"):
+                sev = severity_level.lower()
+                if sev not in ("all", "low", "medium", "high"):
                     return jsonify({"error": f"Invalid severity_level: {severity_level}"}), 400
-                command += f" -ll -l {sev}"
+                command += f" --severity-level {shlex.quote(sev)}"
             if confidence_level:
-                conf = confidence_level.upper()
-                if conf not in ("LOW", "MEDIUM", "HIGH"):
+                conf = confidence_level.lower()
+                if conf not in ("all", "low", "medium", "high"):
                     return jsonify({"error": f"Invalid confidence_level: {confidence_level}"}), 400
-                command += f" -ii -i {conf}"
+                command += f" --confidence-level {shlex.quote(conf)}"
             if additional_args:
                 command += f" {_safe_args(additional_args)}"
             result = execute_command(command, timeout=BANDIT_TIMEOUT)
