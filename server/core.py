@@ -613,7 +613,11 @@ class CommandExecutor:
                 self.return_code = -1
             t1.join(timeout=5)
             t2.join(timeout=5)
-            success = (self.return_code == 0) or (self.timed_out and (self.stdout_data or self.stderr_data))
+            success = (
+                (self.return_code == 0)
+                or (self.timed_out and (self.stdout_data or self.stderr_data))
+                or _findings_exit_ok(self.command, self.return_code)
+            )
             return {
                 "stdout": self.stdout_data, "stderr": self.stderr_data,
                 "return_code": self.return_code, "success": success, "timed_out": self.timed_out,
@@ -630,6 +634,39 @@ class CommandExecutor:
 
 def execute_command(command: str, cwd: Optional[str] = None, timeout: int = COMMAND_TIMEOUT) -> Dict[str, Any]:
     return CommandExecutor(command, timeout=timeout, cwd=cwd).execute()
+
+
+# Scanners conventionally exit non-zero to say "I found something", which is the
+# successful case. Treating that as failure made a productive scan look broken and,
+# worse, made a genuinely broken scan indistinguishable from a productive one - which
+# is how a bandit invocation that aborted on a bad flag went unnoticed, since both
+# states reported success=False.
+#
+# Only exit codes VERIFIED against the installed binaries are listed. Anything absent
+# keeps the previous strict `rc == 0` behaviour, so this cannot loosen a tool it does
+# not know about.
+_FINDINGS_EXIT_CODES: Dict[str, frozenset] = {
+    # measured: 0 clean, 1 findings, 2 usage error
+    "bandit": frozenset({1}),
+    # documented + measured: 1 == leaks found
+    "gitleaks": frozenset({1}),
+    "semgrep": frozenset({1}),
+    "opengrep": frozenset({1}),
+    "tfsec": frozenset({1}),
+    "checkov": frozenset({1}),
+    "gosec": frozenset({1}),
+}
+
+
+def _findings_exit_ok(command: str, return_code: Optional[int]) -> bool:
+    """True when a non-zero exit is this tool's way of reporting findings."""
+    if return_code is None:
+        return False
+    try:
+        binary = os.path.basename(shlex.split(command)[0])
+    except Exception:  # noqa: BLE001
+        return False
+    return return_code in _FINDINGS_EXIT_CODES.get(binary, frozenset())
 
 
 # ---------------------------------------------------------------------------
