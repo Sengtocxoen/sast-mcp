@@ -592,6 +592,55 @@ POST /api/jobs/{job_id}/cancel  # Cancel a job
 POST /api/jobs/cleanup           # Cleanup old jobs
 ```
 
+### Hunt Pipeline (first-party)
+
+Unlike every other endpoint here, these do not wrap a third-party binary — the
+analysis lives in `server/hunt/` as code. They implement the methodology in
+[`docs/hunt-pipeline/ARCHITECTURE.md`](docs/hunt-pipeline/ARCHITECTURE.md),
+whose headline result inverts how SAST is normally sold: static analysis ran at
+**~100% precision selecting targets** and **under 2% detecting sites**.
+
+```http
+GET  /api/hunt                  # The stages, and what each one measured
+GET  /api/hunt/budget           # GitHub API budget left + cost of a run
+POST /api/hunt/catalog          # Catalog -> candidate repos, by category
+POST /api/hunt/target-gate      # Stage A: G1-G4 + GHSA   (the ~100% stage)
+POST /api/hunt/shape-scan       # Stage B: C shape scanners (<2%, measured)
+POST /api/hunt/evidence         # Prove a clean fuzzing run actually ran
+POST /api/hunt/disclosure       # Where can this report actually be sent?
+```
+
+**Stage A — target gating** (`/api/hunt/target-gate`) is the one worth your
+budget. Five independent gates, each of which rejected something real in the
+campaign:
+
+| Gate | Check | Rejected |
+|------|-------|----------|
+| G1 | last **commit** date — never `pushed_at`, which over-reported miniaudio by 5 months | tiffloader, pocketmod, fast_obj |
+| G2 | OSS-Fuzz `project.yaml` must 404 | stb, dr_libs, lz4, miniz, tinygltf |
+| G3 | no in-repo `*fuzz*` harness | bddisasm, qoi, minimp3, ufbx |
+| G4 | distinct open-PR authors, not raw count | nanosvg (45 PRs / 36 authors) |
+| GHSA | no advisory ids in-tree | wildmidi (4 advisories ⇒ swept ground) |
+
+Gates run cheapest-first: G2, G3 and GHSA cost no API budget, so a repo rejected
+by one of them spends nothing. A gate that *errors* is never counted as a pass,
+so a "survivor" provably cleared every gate that ran. G3 and GHSA need a
+checkout — without `local_root` they report `skip`, not a pass.
+
+Costs ~3 metered GitHub requests per repo. **The unauthenticated ceiling is 60
+requests/hour**, so set `GITHUB_TOKEN` for 5,000/hour; a run that hits the
+ceiling stops cleanly and returns a `not_gated` resume list.
+
+**Evidence** (`/api/hunt/evidence`) is the counterpart: a fuzzer that never
+started reports zero crashes, and so does one that found none. Six campaign
+verdicts of "0 crashes" were never tests at all, and two of those targets held
+real bugs. This endpoint refuses to call a result clean without proof, catching a
+missing `INITED`/`cov:` line, throughput collapse from a filesystem-bound
+harness (0 → 3,934 exec/s on vgmstream), uninstrumented target objects
+(fluidsynth's `cov: 20` was the harness alone), parallel-only timeouts, and a
+store-signal PoC built above `-O0`. `/api/fuzz` now carries the same check
+inline via `clean_claim_admissible`.
+
 ## Background Processing
 
 All security scans now run in the background by default, allowing you to:
@@ -735,7 +784,9 @@ sast-mcp/
 ├── server/
 │   ├── config.py        # All env/timeouts in one place
 │   ├── sast_server.py   # Full-featured server
+│   ├── hunt/            # First-party hunt tooling (gating, evidence, disclosure, shapes)
 │   └── simple_sast_server.py  # Lightweight alternative
+├── tests/               # pytest suite for server/hunt (offline, fixture-driven)
 ├── tools/               # install_tools.sh, toon_converter.py, ai_analysis.py
 ├── docs/hunt-pipeline/  # Memory-safety hunting pipeline: architecture, scanners, target catalog
 ├── README.md            # This file
@@ -748,6 +799,17 @@ sast-mcp/
 **Detailed documentation** (parallel scanning, multiprocess backend, async client, Kali/Windows setup, tool health): see **DOCS.md**.
 
 **Memory-safety hunting pipeline**: see **[docs/hunt-pipeline/ARCHITECTURE.md](docs/hunt-pipeline/ARCHITECTURE.md)** for the two-stage static pipeline used in a C/C++ OSS audit, with measured precision per stage. Headline result: target *selection* gating ran at ~100% precision (2 survivors from a 297-library catalog, both yielding findings), while regex *site* detection ran under 2% — so the scanners there are documented as mostly not worth running broadly. No vulnerability details or PoCs are included.
+
+That methodology is implemented as code in **`server/hunt/`** and exposed as the
+`/api/hunt/*` endpoints above and five MCP tools (`hunt_catalog`,
+`hunt_target_gate`, `hunt_shape_scan`, `hunt_evidence_check`,
+`hunt_disclosure_preflight`). The measured verdicts are enforced rather than
+merely documented: `scan3` refuses to run without `allow_retired=True` because
+53 of its hits produced zero real bugs, each scanner must find its own
+known-positive before a zero-hit result is reported as clean, and a gate that
+cannot complete is reported as an error rather than a pass. Run the suite with
+`python -m pytest tests/ -q` — it is offline and fixture-driven, and every case
+is a verdict the campaign actually reached.
 
 ## Troubleshooting
 
