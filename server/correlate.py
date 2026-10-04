@@ -537,6 +537,18 @@ def normalize(tool: str, report_path: str, repo_root: str) -> List[Dict[str, Any
 #    findings trivy is independent of npm-audit, hence the per-domain split.
 _TOOL_FAMILY: Dict[str, Dict[str, str]] = {
     DOMAIN_IAC: {"trivy": "iac-policy", "tfsec": "iac-policy", "checkov": "iac-policy"},
+    # Secret detection is regex and entropy over the same bytes. gitleaks, trivy's
+    # secret scanner and an UNVERIFIED trufflehog detector are three implementations
+    # of one technique, and trivy's secret rules derive from gitleaks' in the first
+    # place. When all three match the same string they have not confirmed each other,
+    # they have re-run the same match -- so on this domain they are one voice.
+    #
+    # This does NOT suppress trufflehog's real advantage. A hit with Verified=true is
+    # an out-of-band authentication against the provider: evidence of a different KIND
+    # rather than another vote. _cluster() already ranks that confidence="confirmed",
+    # above corroborated, and that path does not depend on the family table.
+    DOMAIN_SECRET: {"gitleaks": "secret-regex", "trivy": "secret-regex",
+                    "trufflehog": "secret-regex"},
 }
 
 # 2. Specific rule pairs that fire on the same text for unrelated reasons.
@@ -559,9 +571,13 @@ def _independence(group: List[Dict[str, Any]], tools: List[str], rules: List[str
 
     if len(voices) < len(tools):
         collapsed = sorted({t for t in tools if t in families})
+        why = {
+            DOMAIN_IAC: "trivy absorbed tfsec; checkov shares its policy family",
+            DOMAIN_SECRET: "all three match secrets by regex/entropy over the same "
+                           "bytes, and trivy's rules derive from gitleaks'",
+        }.get(domain, "these engines share rule provenance")
         note = (f"{'+'.join(collapsed)} share rule provenance on {domain} "
-                f"(trivy absorbed tfsec; checkov shares its policy family), "
-                f"so they count as one engine")
+                f"({why}), so they count as one engine")
 
     rule_set = set(rules)
     for a, b in _CORRELATED_RULES:
