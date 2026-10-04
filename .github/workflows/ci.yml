@@ -29,6 +29,14 @@ jobs:
             --extend-ignore=E501,W503 \
             --exclude=__pycache__
 
+      # These guard the false-clean defects: a crashed scanner reporting zero
+      # findings as risk NONE. They are offline and take under a second, so
+      # there is no reason for them not to gate every push.
+      - name: pytest
+        run: |
+          pip install pytest
+          USE_MULTIPROCESSING=0 python -m pytest tests/ -q
+
   # ── Dependency CVEs ───────────────────────────────────────────────────────
   dep-scan:
     name: "pip-audit (deps)"

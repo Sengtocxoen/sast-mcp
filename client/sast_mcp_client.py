@@ -218,7 +218,9 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
         Args:
             target: Path to code directory or file to scan (default: current directory)
             config: Opengrep ruleset to use:
-                   - "auto" (default): Automatically detect and use appropriate rules
+                   - "auto" (default): resolves server-side to p/default. True registry
+                     auto-config cannot run here because the server always passes
+                     --metrics=off, which opengrep refuses to build an auto config without
                    - "p/security-audit": General security audit
                    - "p/owasp-top-ten": OWASP Top 10 vulnerabilities
                    - "p/cwe-top-25": CWE Top 25 most dangerous software weaknesses
@@ -232,17 +234,27 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             output_file: Path to save scan results (Windows format: F:/path/to/file.json).
                         If provided, full results are saved to file and only summary is returned
                         to avoid token limits.
-            max_accuracy: Enable maximum accuracy mode - slower but more thorough (default: True)
+            max_accuracy: Thorough but bounded scanning (default: True). Scans files of
+                   any size, with a 30s per-rule timeout. It deliberately does NOT remove
+                   the memory cap: scans run inside a memory cgroup, so an unbounded scan
+                   is OOM-killed on large repos and a killed engine reports zero findings
             additional_args: Additional Opengrep command-line arguments
 
         Returns:
             Scan results with identified security issues and code quality problems.
             If output_file is provided, returns summary with file location instead of full results.
         """
-        # Add comprehensive scanning flags for maximum accuracy
+        # Thorough, but still bounded. This used to send
+        # "--max-memory 0 --timeout 0", and unbounded memory is not a more
+        # accurate scan: the server runs each scan inside a SCAN_MEMORY_MAX_MB
+        # cgroup, so on a large repo the engine was OOM-killed and still wrote
+        # well-formed JSON with zero results. "Maximum accuracy" was turning big
+        # repositories into clean reports (measured on IPS/rebot, IPS/teijin).
+        # --max-target-bytes 0 is kept: large files are slow, not fatal. The
+        # server clamps anything unbounded that still arrives, as a backstop.
         accuracy_flags = ""
         if max_accuracy:
-            accuracy_flags = " --max-memory 0 --timeout 0 --max-target-bytes 0"
+            accuracy_flags = " --max-target-bytes 0 --timeout 30 --timeout-threshold 3"
 
         combined_args = f"{accuracy_flags} {additional_args}".strip()
 

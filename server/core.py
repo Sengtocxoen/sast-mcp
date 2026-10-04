@@ -20,7 +20,7 @@ from datetime import datetime
 from enum import Enum
 from multiprocessing import Manager
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import psutil
 
@@ -962,6 +962,57 @@ def run_scan_synchronously(tool_name: str, params: Dict[str, Any], scan_function
 MAX_STDOUT_FOR_ANALYSIS = 500_000  # 500KB — cap stdout before toon analysis to avoid OOM on huge outputs
 
 
+def _mark_unproven(toon: Dict[str, Any], tool_name: str, reason: str) -> None:
+    """Overwrite the reassuring parts of a TOON analysis for a scan that failed.
+
+    The analyzer derives its verdict from parsed findings, so no findings always
+    yields risk NONE and "No findings detected by <tool>". For a crashed scan
+    that reads as an all-clear, which is the opposite of the truth.
+    """
+    analysis = toon.setdefault("analysis", {})
+    analysis["unproven"] = True
+    analysis["unproven_reason"] = reason
+    analysis["risk"] = {
+        "overall_risk": "UNKNOWN",
+        "max_severity": "UNKNOWN",
+        "risk_score": None,
+        "risk_factors": [f"{tool_name} did not produce a trustworthy result"],
+    }
+    analysis["recommendations"] = [
+        f"DO NOT read this as clean: {reason}",
+        f"Re-run {tool_name} and confirm it reports work done (files scanned, "
+        f"execution count) before believing a zero-finding result.",
+    ]
+    toon["scan_proven"] = False
+
+
+def scan_trustworthy(tool_name: str, result: Dict[str, Any]) -> Tuple[bool, str]:
+    """Did this scan actually run? Returns (proven, reason_if_not).
+
+    A tool that crashed, timed out, was OOM-killed or never started produces the
+    same "zero findings" as a genuinely clean codebase. Two measured cases:
+    gitleaks returning 9 leaks that were reported as 0 because its report file
+    was never written, and opengrep being OOM-killed and still emitting
+    `results: []`. Both presented as risk NONE. Everything that reaches the TOON
+    wrapper is checked here first so a failure can no longer look like a pass.
+    """
+    if result.get("scan_proven") is False:
+        return False, str(result.get("error") or "the route marked this result unproven")
+    if result.get("timed_out"):
+        return False, "the tool timed out; findings are partial at best"
+    if result.get("error"):
+        return False, str(result["error"])[:300]
+    rc = result.get("return_code")
+    if rc is not None and rc not in (0, 1):
+        if rc in (-9, 137):
+            return False, f"the tool was killed (exit {rc}) — most likely out of memory"
+        if rc in (-15, 143):
+            return False, f"the tool was terminated (exit {rc}) before finishing"
+        if not result.get("stdout") and not result.get("parsed_report"):
+            return False, f"the tool exited {rc} with no output"
+    return True, ""
+
+
 def response_as_toon(
     tool_name: str,
     params: Dict[str, Any],
@@ -972,8 +1023,12 @@ def response_as_toon(
     """
     Wrap a raw scan result as TOON format for AI-friendly response.
     Use this so every tool returns a consistent toon_result the AI can save and analyze.
+
+    An untrustworthy result is labelled rather than summarised: see
+    scan_trustworthy() for why "no findings" is not the same as "clean".
     """
     job_id = f"immediate-{tool_name}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    proven, unproven_reason = scan_trustworthy(tool_name, result)
     # Cap stdout to prevent toon analyzer from crashing on huge outputs (e.g. bearer with 1M+ chars)
     capped_result = result
     stdout = result.get("stdout", "")
@@ -996,8 +1051,12 @@ def response_as_toon(
         toon = create_toon_analysis_result(
             full, analysis, include_raw_findings=include_raw_findings, max_findings=max_findings
         )
+        if not proven:
+            _mark_unproven(toon, tool_name, unproven_reason)
         return {
-            "success": result.get("success", True),
+            "success": bool(result.get("success", True)) and proven,
+            "scan_proven": proven,
+            "unproven_reason": unproven_reason,
             "result_format": "toon-analysis",
             "toon_result": toon,
             "job_id": job_id,

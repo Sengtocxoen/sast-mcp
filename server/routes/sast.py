@@ -41,14 +41,33 @@ logger = logging.getLogger(__name__)
 import os as _os
 
 
+# "auto" asks the registry to build a config, which opengrep refuses to do
+# unless metrics are on — and _grep_perf_flags always adds --metrics=off:
+#   "[ERROR]: Cannot create auto config when metrics are off."
+# Every config=auto scan therefore failed in ~0.2s with exit 2. Resolve it to
+# the registry default pack, which is what auto was documented to mean anyway.
+OPENGREP_AUTO_CONFIG = _os.environ.get("OPENGREP_AUTO_CONFIG", "p/default")
+
+# Markers that mean the engine died rather than merely skipping a file. Opengrep
+# reports both through the same JSON "errors" array.
+_FATAL_SCAN_MARKERS = (
+    "engine was killed",
+    "too much memory",
+    "out of memory",
+    "fatal error",
+    "invalid configuration",
+    "cannot create auto config",
+)
+
+
 def _grep_perf_flags(extra: str) -> str:
     """Smart defaults so a big scan uses all cores, stays under the memory cap,
     and can't hang on a pathological file. Only adds a flag the caller omitted."""
     from config import MAX_PROCESS_WORKERS, SCAN_MEMORY_MAX_MB, OPENGREP_JOBS, OPENGREP_MAX_MEMORY_MB
     flags = []
     has = lambda f: (f in extra)
+    per = OPENGREP_MAX_MEMORY_MB  # MB per worker
     if not has("--jobs") and not has("-j "):
-        per = OPENGREP_MAX_MEMORY_MB  # MB per worker
         if OPENGREP_JOBS > 0:
             jobs = OPENGREP_JOBS  # explicit override — keep parallel scans light
         else:
@@ -56,13 +75,63 @@ def _grep_perf_flags(extra: str) -> str:
             # keep jobs * per-worker memory under ~80% of the scan scope -> no OOM
             jobs = max(1, min(jobs, int(SCAN_MEMORY_MAX_MB * 0.8) // per))
         flags.append(f"--jobs {jobs}")
-        if not has("--max-memory"):
-            flags.append(f"--max-memory {per}")
+    # Previously nested inside the --jobs branch: a caller that passed --jobs got
+    # NO memory cap at all, so the scan ran unbounded under the cgroup and was
+    # OOM-killed. The cap has to be independent of the job count.
+    if not has("--max-memory"):
+        flags.append(f"--max-memory {per}")
     if not has("--timeout"):
         flags.append("--timeout 10 --timeout-threshold 3")
     if not has("--metrics"):
         flags.append("--metrics=off")
     return " ".join(flags)
+
+
+def _is_fatal_scan_error(entry: Any) -> bool:
+    """True when an opengrep 'errors' entry means the run died, not that one
+    file was skipped. A killed engine still emits results: [], so this is the
+    only thing separating a crash from a clean result."""
+    if not isinstance(entry, dict):
+        return any(m in str(entry).lower() for m in _FATAL_SCAN_MARKERS)
+    blob = " ".join(str(entry.get(k, "")) for k in
+                    ("message", "type", "long_msg", "short_msg", "level")).lower()
+    if any(m in blob for m in _FATAL_SCAN_MARKERS):
+        return True
+    # Opengrep marks per-file parse problems with a path; a run-level failure has none.
+    return entry.get("level") in ("error", "fatal") and not entry.get("path")
+
+
+def _clamp_unbounded_flags(extra: str) -> Dict[str, Any]:
+    """Neutralise caller flags that remove all limits.
+
+    The MCP client's `max_accuracy=True` default sends
+    `--max-memory 0 --timeout 0 --max-target-bytes 0`. Unbounded memory does not
+    mean a more thorough scan here: the scan runs inside a
+    SCAN_MEMORY_MAX_MB cgroup, so on a large repo the engine is OOM-killed — and
+    a killed engine still writes well-formed JSON with `results: []`. "Maximum
+    accuracy" was therefore converting big repositories into clean reports.
+    Measured on IPS/rebot (1,261 files) and IPS/teijin (985 files).
+
+    --max-target-bytes 0 is left alone: scanning large files is slow, not fatal.
+    """
+    from config import SCAN_MEMORY_MAX_MB
+    notes = []
+    out = extra
+    if SCAN_MEMORY_MAX_MB > 0:
+        cap = max(512, int(SCAN_MEMORY_MAX_MB * 0.7))
+        for token in ("--max-memory 0", "--max-memory=0"):
+            if token in out:
+                out = out.replace(token, f"--max-memory {cap}")
+                notes.append(
+                    f"--max-memory 0 clamped to {cap}MB: unbounded memory is OOM-killed by "
+                    f"the {SCAN_MEMORY_MAX_MB}MB per-scan cgroup, and a killed engine "
+                    f"reports zero findings")
+    for token in ("--timeout 0", "--timeout=0"):
+        if token in out:
+            out = out.replace(token, "--timeout 30")
+            notes.append("--timeout 0 clamped to 30s per rule so one pathological "
+                         "file cannot stall the whole scan")
+    return {"args": out, "notes": notes}
 
 
 def _opengrep_scan(params: Dict[str, Any]) -> Dict[str, Any]:
@@ -74,7 +143,11 @@ def _opengrep_scan(params: Dict[str, Any]) -> Dict[str, Any]:
     additional_args = params.get("additional_args", "")
     resolved_target = validate_scan_target(target)
     engine = resolve_grep_engine()
+    if str(config).strip().lower() == "auto":
+        config = OPENGREP_AUTO_CONFIG
     safe_extra = _safe_args(additional_args)
+    clamped = _clamp_unbounded_flags(safe_extra)
+    safe_extra = clamped["args"]
     perf = _grep_perf_flags(safe_extra)
     # Opt-in process-level sharding for very large trees (params["parallel"]=true).
     pr = None
@@ -105,6 +178,9 @@ def _opengrep_scan(params: Dict[str, Any]) -> Dict[str, Any]:
         result = execute_command(command, timeout=OPENGREP_TIMEOUT)
     result["original_path"] = target
     result["resolved_path"] = resolved_target
+    result["config_used"] = config
+    if clamped["notes"]:
+        result["flag_adjustments"] = clamped["notes"]
     # Opengrep/Semgrep exit codes:
     #   0 = no findings
     #   1 = findings found (success — NOT an error)
@@ -121,13 +197,34 @@ def _opengrep_scan(params: Dict[str, Any]) -> Dict[str, Any]:
             result["parsed_output"] = parsed
             if "results" in parsed:
                 summary["total_findings"] = len(parsed["results"])
-            # "errors" in opengrep JSON are parse warnings (files it couldn't analyze),
-            # not tool failures. Surface as a warning count, not as an error.
+            # How much was actually looked at. Without this, "0 findings" and
+            # "0 files examined" are indistinguishable.
+            scanned = (parsed.get("paths") or {}).get("scanned")
+            if isinstance(scanned, list):
+                summary["files_scanned"] = len(scanned)
+            # Most "errors" here are per-file parse warnings. But a killed engine
+            # reports through the SAME array, so treating the whole array as
+            # warnings is what let an OOM read as a clean scan. Split them.
             if "errors" in parsed:
-                parse_errors = parsed["errors"]
-                summary["total_parse_warnings"] = len(parse_errors)
-                if parse_errors:
-                    result["parse_warnings"] = parse_errors
+                parse_errors = parsed["errors"] or []
+                fatal = [e for e in parse_errors if _is_fatal_scan_error(e)]
+                warnings = [e for e in parse_errors if e not in fatal]
+                summary["total_parse_warnings"] = len(warnings)
+                if warnings:
+                    result["parse_warnings"] = warnings
+                if fatal:
+                    result["success"] = False
+                    result["scan_proven"] = False
+                    result["fatal_errors"] = fatal[:5]
+                    result["error"] = (
+                        "opengrep did not complete: "
+                        + str(fatal[0].get("message", fatal[0]))[:300]
+                    )
+            # A scan that examined nothing is not a clean scan.
+            if summary.get("files_scanned") == 0 and not summary.get("total_findings"):
+                result["scan_proven"] = False
+                result.setdefault(
+                    "error", "opengrep scanned 0 files — treat this as unproven, not clean")
         except Exception:
             pass
     result["summary"] = summary
