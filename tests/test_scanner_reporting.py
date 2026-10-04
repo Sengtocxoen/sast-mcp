@@ -287,3 +287,32 @@ def test_gitleaks_git_mode_keeps_the_history_depth_limit(app, monkeypatch):
                            data=json.dumps({"target": ROOT}),
                            content_type="application/json")
     assert "--log-opts=--max-count=1000" in seen["cmd"]
+
+
+# -- the sync path must apply the same gate as the TOON wrapper -----------
+
+def test_sync_path_rejects_a_killed_scan_with_partial_output(monkeypatch):
+    """A scan killed mid-run can still emit parseable output and set no error of
+    its own. Without the shared gate it reads as a completed scan."""
+    monkeypatch.setattr(core, "acquire_scan_slot", lambda timeout=None: True)
+    monkeypatch.setattr(core, "release_scan_slot", lambda: None)
+
+    def killed(params):
+        return {"return_code": -9, "stdout": json.dumps({"results": []}), "success": True}
+
+    out = core.run_scan_synchronously("opengrep", {"target": "x"}, killed)
+    assert out["success"] is False
+    assert out["job_status"] == "failed"
+    assert "memory" in out["error"].lower()
+
+
+def test_sync_path_still_passes_a_findings_exit_code(monkeypatch):
+    monkeypatch.setattr(core, "acquire_scan_slot", lambda timeout=None: True)
+    monkeypatch.setattr(core, "release_scan_slot", lambda: None)
+
+    def found(params):
+        return {"return_code": 1, "stdout": json.dumps({"results": [{"check_id": "x"}]}),
+                "success": True, "summary": {"total_findings": 1}}
+
+    out = core.run_scan_synchronously("opengrep", {"target": "x"}, found)
+    assert out.get("job_status") != "failed"
