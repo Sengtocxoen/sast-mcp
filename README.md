@@ -737,6 +737,7 @@ sast-mcp/
 │   ├── sast_server.py   # Full-featured server
 │   └── simple_sast_server.py  # Lightweight alternative
 ├── tools/               # install_tools.sh, toon_converter.py, ai_analysis.py
+├── docs/hunt-pipeline/  # Memory-safety hunting pipeline: architecture, scanners, target catalog
 ├── README.md            # This file
 ├── DOCS.md              # Detailed docs (health, parallel, multiprocess, Kali setup)
 ├── requirements.txt
@@ -745,6 +746,8 @@ sast-mcp/
 ```
 
 **Detailed documentation** (parallel scanning, multiprocess backend, async client, Kali/Windows setup, tool health): see **DOCS.md**.
+
+**Memory-safety hunting pipeline**: see **[docs/hunt-pipeline/ARCHITECTURE.md](docs/hunt-pipeline/ARCHITECTURE.md)** for the two-stage static pipeline used in a C/C++ OSS audit, with measured precision per stage. Headline result: target *selection* gating ran at ~100% precision (2 survivors from a 297-library catalog, both yielding findings), while regex *site* detection ran under 2% — so the scanners there are documented as mostly not worth running broadly. No vulnerability details or PoCs are included.
 
 ## Troubleshooting
 
