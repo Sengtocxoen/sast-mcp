@@ -148,6 +148,25 @@ class Response:
         return f"<Response {self.status} {self.url}{tail}>"
 
 
+def _default_cache_dir() -> str:
+    """A per-user cache location, not a shared one.
+
+    This used to default into tempfile.gettempdir(). /tmp is world-writable on a
+    multi-user host, so another local user could pre-create the directory or the
+    per-URL entry files and control the gate verdicts this cache feeds. Falls
+    back to a uid-qualified name under the temp dir only when there is no home.
+    """
+    base = os.environ.get("XDG_CACHE_HOME")
+    if not base:
+        home = os.path.expanduser("~")
+        if home and home != "~" and os.path.isdir(home):
+            base = os.path.join(home, ".cache")
+    if base:
+        return os.path.join(base, "sast-mcp", "hunt")
+    uid = getattr(os, "geteuid", lambda: "nouid")()
+    return os.path.join(tempfile.gettempdir(), f"sast-mcp-hunt-cache-{uid}")
+
+
 class DiskCache:
     """URL -> response on disk, so re-gating a catalog costs almost nothing.
 
@@ -158,16 +177,45 @@ class DiskCache:
     """
 
     def __init__(self, directory: Optional[str] = None):
-        self.dir = directory or os.environ.get("HUNT_CACHE_DIR") or os.path.join(
-            tempfile.gettempdir(), "sast-mcp-hunt-cache")
+        self.dir = directory or os.environ.get("HUNT_CACHE_DIR") or _default_cache_dir()
         self._lock = threading.Lock()
         try:
-            os.makedirs(self.dir, exist_ok=True)
-            self.enabled = True
+            # 0o700: these entries ARE the gates' evidence base. On a shared host
+            # a world-writable cache dir lets another local user decide what
+            # gating believes - making a saturated repo look unmined (G2) or an
+            # abandoned one look maintained (G1).
+            os.makedirs(self.dir, mode=0o700, exist_ok=True)
+            self.enabled = self._dir_is_trustworthy()
         except OSError as e:
             # A read-only or missing cache dir must not take the tools down.
             logger.warning("hunt cache disabled (%s): %s", self.dir, e)
             self.enabled = False
+
+    def _dir_is_trustworthy(self) -> bool:
+        """Refuse a cache directory somebody else could have planted."""
+        try:
+            if os.path.islink(self.dir):
+                logger.warning("hunt cache disabled: %s is a symlink", self.dir)
+                return False
+            st = os.stat(self.dir)
+            geteuid = getattr(os, "geteuid", None)
+            if geteuid is not None:  # POSIX only; st_uid is meaningless on Windows
+                if st.st_uid != geteuid():
+                    logger.warning(
+                        "hunt cache disabled: %s is owned by uid %s, not %s",
+                        self.dir, st.st_uid, geteuid())
+                    return False
+                if st.st_mode & 0o022:  # group/other writable
+                    try:
+                        os.chmod(self.dir, 0o700)
+                    except OSError:
+                        logger.warning("hunt cache disabled: %s is writable by others "
+                                       "and could not be tightened", self.dir)
+                        return False
+        except OSError as e:
+            logger.warning("hunt cache disabled (%s): %s", self.dir, e)
+            return False
+        return True
 
     def _path(self, url: str) -> str:
         digest = hashlib.sha256(url.encode("utf-8")).hexdigest()

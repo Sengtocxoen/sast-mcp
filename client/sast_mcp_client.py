@@ -599,8 +599,15 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
         Execute Gitleaks for detecting secrets and sensitive information in git repositories.
         Fast and accurate secret scanner for git repos, files, and directories.
 
+        Scope note: gitleaks reads GIT HISTORY, not the working tree. It finds
+        secrets in commits (including ones deleted from HEAD) but never sees an
+        untracked or gitignored file. Working-tree scanners (repo_scan,
+        opengrep_scan) are the mirror image. See DOCS.md section 11.
+
         Args:
-            target: Path to git repository or directory to scan
+            target: Path to git repository or directory to scan. Pass
+                    additional_args="--no-git" for a plain directory or a tree of
+                    repos; the history-depth limit is then omitted automatically.
             config: Path to gitleaks config file for custom rules
             report_format: Output format (json, csv, sarif)
             report_path: Path to save the report file

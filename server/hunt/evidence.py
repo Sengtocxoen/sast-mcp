@@ -96,11 +96,24 @@ def _default_runner(argv: Sequence[str]):
         return 127, "", f"{type(e).__name__}: {e}"
 
 
-def _as_text(source: str) -> str:
-    """Accept either source text or a path to it."""
+def _as_text(source: str, allow_path: bool = False) -> str:
+    """Source text, or - only when allow_path is set - the contents of a path.
+
+    The path sniffing used to be unconditional, which made every caller a file
+    reader. `harness_source` is documented as inline TEXT and reaches this
+    function straight from a request body without passing through
+    core.validate_scan_target, unlike its sibling `harness_path`. So
+    POST /api/hunt/evidence {"harness_source": "/etc/anything"} read that file
+    and returned matching lines in hits[*].text - confirmed against a file
+    outside every allowed mount root.
+
+    Path reading is therefore opt-in and used only by callers that have already
+    confined the path. The HTTP layer never sets it: routes/hunt.py reads files
+    itself through validate_scan_target and passes text down.
+    """
     if not source:
         return ""
-    if len(source) < 400 and "\n" not in source:
+    if allow_path and len(source) < 400 and "\n" not in source:
         try:
             if os.path.isfile(source):
                 with open(source, "r", errors="ignore") as f:
@@ -264,14 +277,14 @@ def check_instrumentation(object_paths: Sequence[str], runner: Optional[Runner] 
 
 # ------------------------------------------------------------ harness I/O smell
 
-def check_harness_filesystem_io(source: str) -> Dict[str, Any]:
+def check_harness_filesystem_io(source: str, allow_path: bool = False) -> Dict[str, Any]:
     """Flag a harness that touches the filesystem per execution.
 
     This is the single highest-leverage harness defect the campaign found: the
     fix was ~40 lines and bought a 3,934x throughput improvement plus better
     coverage. Most media libraries already have the seam for it.
     """
-    text = _as_text(source)
+    text = _as_text(source, allow_path=allow_path)
     hits: List[Dict[str, Any]] = []
     for i, line in enumerate(text.splitlines(), 1):
         if line.lstrip().startswith(("//", "*", "/*", "#")):
@@ -292,7 +305,8 @@ def check_harness_filesystem_io(source: str) -> Dict[str, Any]:
 
 # ---------------------------------------------------------------- assert triage
 
-def classify_assert_crash(source: str, line: int, window: int = 8) -> Dict[str, Any]:
+def classify_assert_crash(source: str, line: int, window: int = 8,
+                          allow_path: bool = False) -> Dict[str, Any]:
     """Is an assert crash reportable, or does a correct path exist below it?
 
     Section 4's sharpest case: OpenFBX's 6 crashes were all one assert(false)
@@ -301,7 +315,7 @@ def classify_assert_crash(source: str, line: int, window: int = 8) -> Dict[str, 
     had no fallback, so it SEGVs under NDEBUG - reportable. Same symptom,
     opposite verdict, and only the surrounding lines tell you which.
     """
-    text = _as_text(source)
+    text = _as_text(source, allow_path=allow_path)
     lines = text.splitlines()
     if line < 1 or line > len(lines):
         return {"verdict": "unknown", "detail": f"line {line} is outside the file "
