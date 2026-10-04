@@ -236,10 +236,19 @@ def register(app: Flask) -> None:
         try:
             params = request.json or {}
             repos = _repos(params)
+            dropped_slugs: List[str] = []
             if not repos:
                 entries, _ = _load_entries(params)
                 tags = _tags(params)
-                repos = hunt_catalog.repos_of(hunt_catalog.filter_tags(entries, tags))
+                # A catalog is parsed from third-party README content, so these
+                # slugs are untrusted input reaching both URL construction and a
+                # filesystem join. Validate them like explicit repos, but drop
+                # the bad ones instead of failing the whole request.
+                for slug in hunt_catalog.repos_of(hunt_catalog.filter_tags(entries, tags)):
+                    try:
+                        repos.append(_repo(slug, "catalog entry"))
+                    except ValueError:
+                        dropped_slugs.append(str(slug)[:80])
             if not repos:
                 return jsonify({"error": "no repos: pass repos=[...] or catalog='parsers'"}), 400
 
@@ -273,6 +282,8 @@ def register(app: Flask) -> None:
 
             out = hunt_gating.gate_repos(client(), selected, **opts)
             out["repos_skipped_for_cap"] = skipped_for_cap
+            if dropped_slugs:
+                out["catalog_entries_rejected"] = dropped_slugs[:20]
             if skipped_for_cap:
                 out["cap_note"] = (f"{len(skipped_for_cap)} repos were not gated (max_repos="
                                    f"{max_repos}). Gate by category rather than all at once.")
@@ -351,10 +362,10 @@ def register(app: Flask) -> None:
                     rejected.append(f"{p}: {e}")
 
             if not any([log, harness, objects, params.get("poc_build_command"),
-                        params.get("assert_source")]):
+                        params.get("assert_source"), params.get("assert_path")]):
                 return jsonify({"error": "nothing to assess: pass log/log_path, "
                                          "object_paths, harness_source/harness_path, "
-                                         "poc_build_command or assert_source"}), 400
+                                         "poc_build_command or assert_source/assert_path"}), 400
 
             out: Dict[str, Any] = hunt_evidence.assess(
                 log=log,
@@ -370,12 +381,21 @@ def register(app: Flask) -> None:
                 out["poc_build"] = hunt_evidence.check_poc_build_flags(
                     str(params["poc_build_command"]),
                     signal=str(params.get("signal", "store")))
-            if params.get("assert_source") and params.get("assert_line"):
-                src = params["assert_source"]
-                if isinstance(src, str) and "\n" not in src and len(src) < 400:
-                    src = validate_scan_target(src)
+            # assert_source is TEXT; assert_path is a file, read here through
+            # validate_scan_target. The previous version validated assert_source
+            # only when it "looked like a path", which both guessed at the
+            # caller's intent and rejected legitimate one-line inline source.
+            assert_src = params.get("assert_source") or ""
+            assert_path = _optional_path(params, "assert_path")
+            if assert_path:
+                try:
+                    with open(assert_path, "r", errors="ignore") as f:
+                        assert_src = f.read()[:400_000]
+                except OSError as e:
+                    return jsonify({"error": f"could not read assert_path: {e}"}), 400
+            if assert_src and params.get("assert_line"):
                 out["assert_triage"] = hunt_evidence.classify_assert_crash(
-                    src, int(params["assert_line"]))
+                    assert_src, int(params["assert_line"]))
             return jsonify(out)
         except ValueError as e:
             return jsonify({"error": str(e)}), 400

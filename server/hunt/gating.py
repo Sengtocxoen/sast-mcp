@@ -66,6 +66,10 @@ _LLVM_ENTRY_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]{3,})\s*\(")
 
 ALL_GATES = ("G1", "G2", "G3", "G4", "GHSA")
 
+# One path segment of a repo slug. Must start alphanumeric, so "..", ".git" and
+# an empty segment are all rejected before the slug reaches a filesystem join.
+_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+
 
 @dataclass
 class Verdict:
@@ -538,15 +542,32 @@ def _summary_line(repo, rejected, errors, flagged, skipped) -> str:
 
 
 def find_local_checkout(repo: str, local_root: Optional[str]) -> Optional[str]:
-    """Locate a checkout of `repo` under `local_root`, if one is there."""
+    """Locate a checkout of `repo` under `local_root`, if one is there.
+
+    The returned path is walked by G3 and read by the GHSA gate, and the repo
+    slug can originate in a third-party catalog, so both halves are checked:
+    each segment must look like a repo name, and the resolved path must stay
+    under local_root. Traversal was previously blocked only incidentally, by
+    normalize_repo stripping dots - an easy thing to lose in a later edit.
+    realpath also rejects a symlinked checkout pointing out of the root, which
+    is the correct behaviour for confinement.
+    """
     if not local_root or not os.path.isdir(local_root):
         return None
     owner, _, name = repo.partition("/")
+    if not (_SAFE_SEGMENT_RE.match(owner) and _SAFE_SEGMENT_RE.match(name)):
+        logger.warning("refusing to resolve a checkout for suspicious slug %r", repo[:80])
+        return None
+
+    root_real = os.path.realpath(local_root)
     for candidate in (os.path.join(local_root, owner, name),
                       os.path.join(local_root, f"{owner}-{name}"),
                       os.path.join(local_root, name)):
-        if os.path.isdir(candidate):
-            return candidate
+        real = os.path.realpath(candidate)
+        if real != root_real and not real.startswith(root_real + os.sep):
+            continue  # escaped the root (traversal, or a symlink out)
+        if os.path.isdir(real):
+            return real
     return None
 
 
