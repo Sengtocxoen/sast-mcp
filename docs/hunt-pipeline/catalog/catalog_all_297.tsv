@@ -1,0 +1,298 @@
+297
+misc	neilstephens/TinyRISCV64	(1 C++, MIT)           |RISC-V RV64IM Virtual Machine
+2d	walkerje/C-Turtle	(1 C++, MIT)           |Port of Python's Turtle to C++
+2d	Jaysmito101/cgl	(2   C, MIT)           |C Game Library
+2d	azmr/colourblind	(1   C, ISC)           |Simulating colourblindness
+2d	sse2/daisy	(1 C++, MIT)           |2D Graphics and text
+2d	gamelly/gly-type	(1, C, WTFPL2)         |Ultra lightweight font renderer
+2d	npiegdon/immediate2d	(2 C++, PD)            |Zero-configuration, immediate-mode 2
+2d	anael-seghezzi/Maratis-Tiny-C-library	(1   C, ZLIB)          |Image processing routines
+2d	ColleagueRiley/RFont	(1   C, ZLIB)          |Simple-to-use lightweight single hea
+2d	ColleagueRiley/RGL	(1   C, ZLIB)          |Simple ultra-lightweight OpenGL vers
+2d	Sir-Irk/si_normalmap	**(1   C, PD)**          |**Image to Normal Map generator**
+2d	erkkah/tigr	(2   C, PD)            |Windowing, text and graphics for Win
+2d	krychu/wfc	(1   C, MIT)           |Generate image locally similar to th
+3d	glampert/debug-draw	(1 C++, PD)            |API-agnostic immediate-mode debug re
+3d	ands/lightmapper#lightmapper	**(1   C, PD)**          |**Use your OpenGL renderer to offl
+3d	ands/seamoptimizer	**(1   C, PD)**          |**Modify lightmap data to hide sea
+3d	tsherif/simple-opengl-loader	(1   C, MIT)           |Extensible, cross-platform OpenGL lo
+3d	nothings/stb	**(1   C, PD)**          |**Minecraft-esque voxel rendering 
+3d	Cultrarius/Swarmz	(1 C++, PD)            |Swarming/flocking algorithm
+3d	ddiakopoulos/tinygizmo	(2 C++, PD)            |Gizmo objects for interactively edit
+3d	Sigkill79/sts	**(1   C, PD)**          |**Vertex cache optimization of mes
+3d	GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator	(1   C, MIT)           |Memory allocator for Vulkan
+3d	nichitaciuprin/ZLight	(1   C, ZLIB)          |Software rendering with depth, light
+ai	codeplea/genann	(2   C, ZLIB)          |Simple neural networks (ANN)
+ai	attractivechaos/kann	(2   C, MIT)           |Automatic differentiation   (2 files
+app	ColleagueRiley/RGFW	(1   C, ZLIB)          |A multi-platform single-header user-
+argv	adishavit/argh	(1 C++, BSD)           |Command-line argument parsing
+argv	catchorg/Clara	(1 C++, BOOST)         |Composable, command line parser for 
+argv	CLIUtils/CLI11	(1 C++, BSD)           |Feature-rich CLI parsing in modern C
+argv	tanakh/cmdline	(1 C++, BSD)           |Command-line argument parsing
+argv	sailormoon/flags	(1 C++, PD)            |Command-line argument parsing
+argv	kgabis/kgflags	(1   C, MIT)           |Command-line argument parsing
+argv	hernandp/linkom	(1   C, MIT)           |Command-line argument parsing w/ DOS
+argv	jibsen/parg	(2   C, PD)            |Command-line argument parsing
+argv	Fytch/ProgramOptions.hxx	(1 C++, MIT)           |Command-line argument parsing
+asm	aqilc/chasm	(2   C, PD)            |Runtime X64 assembler
+audio	BareRose/atomix	**(1   C, PD)**          |**Wait-free atomic sound mixer**
+audio	afterwise/aw-ima	(1   C, MIT)           |IMA-ADPCM audio decoder
+audio	cr88192/bgbtech_misc	(1   C, MIT)           |MS-IMA_ADPCM variant
+audio	reduz/chibi-xmplay	(2   C, BSD3)          |XM module playback library
+audio	Clownacy/clownresampler	**(1   C, BSD0)**        |**Audio resampling**
+audio	mackron/miniaudio	(2   C, PD)            |Audio playback and capture library
+audio	lieff/minimp3	**(1   C, CC0)**         |**Minimalistic MP3 decoder with ss
+audio	icculus/mojoAL	(1   C, ZLIB)          |Full OpenAL 1.1 implementation
+audio	Strultz/organya.h	**(1   C, BSD0)**        |**Organya/OrgMaker music renderer*
+audio	rombankzero/pocketmod	(1   C, MIT)           |ProTracker MOD file renderer
+audio	schellingb/TinySoundFont	(1   C, MIT)           |SoundFont2 loader & synthesizer
+bench	iboB/picobench	(1 C++, MIT)           |Microbenchmarking
+bench	sheredom/ubench.h	**(1   C, PD)**          |**Microbenchmarking**
+c	mentalisttraceur/errnoname	(2   C, BSD0)          |Extended errno messages
+c	edubart/minicoro	**(1   C, PD-0MIT)**     |**Stackful cross-platform coroutin
+cpp	gulrak/filesystem	(1 C++, MIT)           |Implementation of std::filesystem
+cpp	ned14/outcome	(1 C++, APACHE2-BOOST) |Outcome and result C++ containers
+crypt	mikejsavage/ggentropy	(2 C++, ISC)           |Cross platform entropy library
+crypt	MichelPaulissen/random3	**(1   C, PD)**          |**Crypt-random generator**
+csv	awdeorio/csvstream	(1 C++, MIT)           |CSV parser
+csv	ben-strasser/fast-cpp-csv-parser	(1 C++, BSD)           |CSV parser
+csv	d99kris/rapidcsv	(1 C++, BSD)           |CSV parser
+csv	vincentlaucsb/csv-parser	(1 C++, MIT)           |CSV parser and serializer
+date	HowardHinnant/date	(1 C++, MIT)           |Date and time libraries
+debug	iboB/b_stacktrace	(1   C, MIT)           |Stack tracing
+debug	wc-duck/dbgtools	(2   C, ZLIB)          |Cross-platform debug util libraries
+debug	foonathan/debug_assert	(1 C++, ZLIB)          |Modular assertion macro
+debug	scottt/debugbreak	(1   C, BSD)           |Programmatic debug break
+debug	emilk/loguru	(1 C++, PD)            |Flexible logging
+debug	gpakosz/Assert	(2 C++, WTFPL2)        |Flexible assertions
+dev	houqp/libue	(1   C, MIT)           |Helper library for Linux device hot-
+ds	etherealvisage/avl	(2   C, PD)            |AVL tree
+ds	JacksonAllan/CC	(1   C, MIT)           |Typesafe data structures (vector, li
+ds	DanielGibson/Snippets	**(1   C, PD)**          |**Typesafe dynamic arrays (like st
+ds	BareRose/dynarr	**(1   C, PD)**          |**Dynamic array container**
+ds	ArjArav98/DynaVar	(1 C++, GPL3)          |Object which can store any type of p
+ds	buserror/simavr	(1   C, LGPL2)         |Thread/core safe FIFO
+ds	RolandMarchand/hashmap.h	(1   C, BSD0)          |Type-safe hashmaps
+ds	iboB/itlib	(1 C++, MIT)           |Several C++11 standard-contaner-like
+ds	Garfield1002/jhr_skip_list	(1 C++, PD)            |Skip Lists
+ds	Garfield1002/jrsl	**(1   C, PD)**          |**Skip Lists**
+ds	graphitemaster/libintrusive	(2   C, PD)            |Intrusive data structures
+ds	vy/libpqueue	(2   C, BSD)           |Priority queue (heap)
+ds	ivanseidel/LinkedList	(2   C, MIT)           |Linked list C++
+ds	hardikp/cpp-mempool	(1 C++, MIT)           |Efficient minimal memory pool implem
+ds	gpakosz/PackedArray	(2   C, WTFPL2)        |Memory-efficient array of elements w
+ds	ennorehling/clibs	(2   C, ISC)           |Space-efficient linked-list
+ds	troydhanson/uthash	(2   C, BSD)           |Several 1-header, 1-license-file lib
+ds	RolandMarchand/vector.h	(1   C, BSD0)          |Type-safe dynamic arrays
+ds	JacksonAllan/Verstable	(1   C, MIT)           |High performance and typesafe generi
+ds	segcore/yar	**(1   C, PD)**          |**Type-safe dynamic arrays in C**
+engine	rxi/kit	**(1   C, PD)**          |**Tiny library for making small ga
+engine	OneLoneCoder/olcPixelGameEngine	(1 C++, BSD3)          |Game engine
+engine	martincohen/Punity	(1   C, MIT)           |A tiny game engine in C
+eval	e-t-sudo/ceval-single-header	(1   C, MIT)           |A single-header library for parsing 
+eval	ribbon-otter/evalmath	(2 C++, 0MIT)          |C++23 simple math string evaluation 
+eval	wernsey/miscsrc	(2   C, UNLICENSE)     |C math string evaluation
+eval	codeplea/tinyexpr	(2   C, ZLIB)          |Evaluation of math expressions from 
+file	dg4l/bytearray	(2   C, GPL3)          |Library to read, write and print bin
+file	tronkko/dirent	(1   C, MIT)           |Dirent for Windows: retrieve file & 
+file	mackron/fs	**(2   C, PD/MIT-0)**    |File system and archive abstractio
+file	edubart/miniphysfs	(1   C, ZLIB)          |Single-file port of PhysFS, a fs/zip
+file	rec/tfile	(1 C++, MIT)           |FILE* wrapper does read-write-append
+file	cxong/tinydir	(1   C, BSD)           |Cross-platform directory reading (Wi
+file	Partakithware/VeloxFS	**(1   C, PD)**          |Single-header C99 filesystem for e
+file	gpakosz/whereami	(2   C, WTFPL2)        |Get path/filename of executable or m
+font	azmr/blit-fonts	(1   C, ISC)           |Bitmap font blitters
+game	MichaelMackus/libroguelike	(1   C, MIT)           |Simple game library for Roguelike ga
+hash	zzo38/freeheromesh	(2   C, PD)            |SHA1/SHA3/MD5 hashes
+hash	BareRose/lonesha256	**(1   C, PD)**          |**SHA256 implementation**
+hash	okdshin/PicoSHA2	(1 C++, MIT)           |SHA256 implementation
+hash	Cyan4973/xxHash	(2   C, BSD)           |Fast hash function
+image	ArashPartow/bitmap	(1 C++, MIT)           |Bitmap decoder and utilities
+image	thebeast33/cro_lib	**(1   C, PD)**          |**Average, min, max mipmap generat
+image	ad-si/FlatCV	(2   C, ISC)           |Image processing and computer vision
+image	paladin-t/framepacker	(1 C++, MIT)           |Texture bin packing algorithm
+image	MalcolmMcLean/tiffloader	(2   C, PD)            |TIFF image loader
+ini	benhoyt/inih	(2   C, BSD)           |.ini file parser
+input	ApoorvaJ/EasyTab	**(1   C, PD)**          |**Multi-platform tablet input**
+json	lordoffox/ajson	(1 C++, BOOST)         |JSON serialize & deserialize w/ STL 
+json	DaveGamble/cJSON	(1   C, MIT)           |JSON parser
+json	outscale/csonpath	(1   C, BSD3)          |JsonPath implementation
+json	zserge/jsmn	(1   C, MIT)           |Minimalistic JSON parser
+json	lcsmuller/json-build	(1   C, MIT)           |JSON serializer
+json	sheredom/json.h	**(1   C, PD)**          |**JSON parser**
+json	nlohmann/json	(1 C++, MIT)           |JSON parse, serialize, deserialize
+json	Zguy/Jzon	(2 C++, MIT)           |JSON parser
+json	kgabis/parson	(2   C, MIT)           |JSON parser and serializer
+json	kazuho/picojson	(1 C++, BSD)           |JSON parse/serializer
+json	septag/sjson	(1   C, BSD2)          |JSON encode/decoder
+log	rxi/log.c	(2   C, MIT)           |Extremely small (~150 LoC) logging l
+log	an-dr/microlog	(2   C, MIT)           |Extensible and configurable logging 
+logic	andrew-gresyk/FFSM2	(1 C++, MIT)           |Flat FSM
+logic	andrew-gresyk/HFSM2	(1 C++, MIT)           |Hierarchical FSM
+math	TealEgg/aint	**(1   C, PD)**          |Single-header C99 library for larg
+math	starwing/amoeba	(1   C, MIT)           |Constraint solver (Cassowary) w/Lua 
+math	raylee9919/cdt	**(1   C, PD)**          |**2D Constrained Delaunay Triangul
+math	BrunoLevy/geogram.psm.Delaunay	(2 C++, BSD3)          |2D and 3D Delaunay triangulation
+math	983/df	**(1   C, PD)**          |**Find voronoi region in linear ti
+math	BareRose/dvector	**(1   C, PD)**          |**2D/3D vector/quaternion/matrix m
+math	wareya/fft	(1 C++, PD)            |Fast Fourier Transform
+math	gerbenvoshol/Hidden-Markov-Model-Toolkit	(1   C, GPL2)          |Discrete and continuous Hidden Marko
+math	JCash/voronoi	(1   C, MIT)           |Find voronoi regions on float/double
+math	datenwolf/linmath.h	**(1   C, WTFPL2)**      |**Vector library**
+math	gc1905/matrix-hpp	(1 C++, MIT)           |Matrix class container for linear al
+math	jlblancoc/nanoflann	(1 C++, BSD)           |Build KD trees for point clouds
+math	Hectarea1996/omm	(1 C++, MIT)           |Template open multi-methods
+math	BrunoLevy/geogram.psm.OpenNL	(2 C++, BSD3)          |Linear and eigen solvers
+math	corporateshark/poisson-disk-generator	(1 C++, MIT)           |Poisson disk points generator (disk 
+math	ivanfratric/polypartition	(2 C++, MIT)           |Polygon triangulation, partitioning
+math	possibly-wrong/precision	(1 C++, PD)            |Arbitrary-precision integer and rati
+math	grego/rfft.h	**(1   C, PD)**          |**Fast Fourier Tranform for arbitr
+math	memononen/SDF	(1   C, MIT)           |Compute signed-distance field from a
+math	michaldrobot/ShaderFastLibs	(1 C++, MIT)           |(also HLSL) Approximate transcendent
+math	torkeldanielsson/simple_linear_regression	(1   C, MIT)           |Simple linear regression
+math	roukaour/simrank	(2 C++, MIT)           |SimRank graph similarity algorithm
+math	slendidev/smath	(1 C++, APACHE2)       |Linear algebra math library (C++23)
+math	Marc-B-Reynolds/Stand-alone-junk	**(1   C, PD)**          |**Sobol & stratified sampling sequ
+math	gerbenvoshol/Statistics-Tool-Box	**(1   C, PD)**          |**Statistical functions**
+math	corporateshark/Summed-Area-Table	(1 C++, MIT)           |Summed-Area Table generation and sum
+math	monolifed/vmath	**(1   C, PD)**          |**Vector/matrix library**
+math	karimnaaji/voxelizer	(1   C, MIT)           |Convert triangle mesh to voxel trian
+math	jpcy/xatlas	(2 C++, MIT)           |Mesh parameterization
+mem	spaskalev/buddy_alloc	**(1   C, BSD0)**        |**Buddy memory allocator**
+mem	EasyMem/easy_memory	(1   C, MIT)           |Platform-agnostic memory management 
+mem	WilliamBundy/wb_alloc	**(1   C, PD)**          |**Custom allocators in a single-he
+mesh	jkuhlmann/cgltf	(1   C, MIT)           |GlTF 2.0 file loader
+mesh	thisistherk/fast_obj	(1   C, MIT)           |Wavefront OBJ file loader
+mesh	jpcy/objzero	(2   C, MIT)           |Wavefront OBJ file loader
+mesh	dav64/qll	(1 C++, WTFPL2)        |Quake3 BSP loader
+mesh	syoyo/tinyobjloader-c	(1   C, MIT)           |Wavefront OBJ file loader
+mesh	syoyo/tinyobjloader	(1 C++, MIT)           |Wavefront OBJ file loader
+mesh	ddiakopoulos/tinyply	(2 C++, PD)            |PLY mesh file loader
+mesh	joeld42/tk_objfile	(1   C, MIT)           |OBJ file loader
+misc	mobius3/asap	(1 C++, MIT)           |Library for parsing, printing, itera
+misc	zzo38/superzz0	(2   C, PD)            |Encoder/decoder for ASN.1 DER format
+misc	CarlosLunaMota/CLM_LIBS	**(1   C, PD)**          |**Diverse utilities**
+misc	gerbenvoshol/Color-Toolkit	(1   C, GPL2)          |Color conversion utils (RGB, XYZ, La
+misc	c-smile/cpp-generators	(1 C++, BSD)           |Generators in C++
+misc	kunglab/ebnn	(1   C, MIT)           |BNN (Binarized Neural Networks)
+misc	robertsdotpm/h.h	(1   C, GPL3)          |Diverse utilities
+misc	CN-xLeaves/mmu	(2   C, MIT)           |Memory management and data structure
+misc	Arash-codedev/openGA	(1 C++, MPL2)          |A C++ Generic Algorithm solver libra
+misc	codeplea/pluscallback	(1 C++, ZLIB)          |Function/method callbacks
+misc	sheredom/process.h	**(1   C, PD)**          |**Process control API**
+misc	nayuki/QR-Code-generator	(2   C, MIT)           |QR Code generator
+misc	svpv/qsort	(1   C, MIT)           |Qsort algorithm as a C macro
+misc	zzo38/scorpion	(2   C, PD)            |URL parser
+misc	EimaMei/sili	**(1   C, PD)**          |**C toolchain for modern C program
+misc	wooorm/stmr.c	(2   C, MIT)           |Extract English word stems
+misc	Neur1n/x.h	(1   C, MULAN2)        |Cross-platform C/C++ utilities
+nav	leethomason/MicroPather	(2 C++, ZLIB)          |Pathfinding with A\*
+net	civetweb/civetweb	(2   C, MIT)           |HTTP server, fork of Mongoose
+net	yhirose/cpp-httplib	(1   C, MIT)           |Cross-platform HTTP server/client
+net	zpl-c/enet	(1   C, MIT)           |Reliable UDP networking library
+net	hellerf/EmbeddableWebServer	(1   C, BSD)           |HTTP server
+net	mingodad/HappyHTTP	(2 C++, ZLIB)          |HTTP client requests
+net	chrberger/libcluon	(1 C++, MPL2)          |Cross-platform socket wrapper and da
+net	zpl-c/librg	(1   C, BSD3)          |World/entity synchronization multipl
+net	corporateshark/LUrlParser	(2 C++, MIT)           |Lightweight URL & URI parser RFC 173
+net	cesanta/mongoose	(2   C, GPLv2)         |HTTP server
+net	prideout/par	(1   C, MIT)           |CURL wrapper
+net	BareRose/swrap	**(1   C, PD)**          |**TCP and UDP socket wrapper**
+net	Pintea/tiniest-analytics	(2 C++, MIT)           |Cross-platform analytics for games (
+net	kokke/tiny-MQTT-c	(4   C, PD)            |Small implementation of (some of) th
+net	eduardsui/tlse	(2   C, PD-BSD2)       |TLS v1.0, 1.2, 1.3 and DTLS 1.0, 1.2
+net	brunexgeek/webster	(2 C++, APACHE2)       |Standalone HTTP server/client
+net	tom-seddon/yhs	(2   C, PD)            |Non-production-use HTTP server
+net	Smilex/zed_net	**(1   C, PD)**          |**Cross-platform socket wrapper**
+net	starwing/znet	(1   C, MIT)           |Cross-platform networking w/ Lua bin
+nn	shinymonitor/qmtik	(1   C, MIT)           |Quantized Model Training and Inferen
+pack	DrMcCoy/dmc_unrar	(1   C, GPL2)          |RAR file decompression
+pack	lz4/lz4	(2   C, BSD)           |Fast but larger LZ compression
+pack	rxi/microtar	(2   C, MIT)           |Lightweight tar library
+pack	richgel999/miniz	(1   C, MIT)           |Compression, decompression, ZIP file
+pack	BareRose/nibrans	**(1   C, PD)**          |**Adaptive rANS library**
+pack	johnezang/pithy	(2   C, BSD)           |Fast but larger LZ compression
+parse	camgunz/cmp	(2   C, MIT)           |MessagePack parser and serializer
+parse	yhirose/cpp-peglib	(1   C, MIT)           |PEG (Parsing Expression Grammars) li
+parse	leximayfield/flexic	(2   C, ZLIB)          |Google FlexBuffer parser and writer
+parse	iboB/furi	(1   C, MIT)           |URL & URI parsing
+parse	aquefir/slre	(1   C, GPL2)          |Regular expression matcher
+parse	marzer/tomlplusplus	(1 C++, MIT)           |TOML parser and serializer
+parse	adamyaxley/Unformat	(1 C++, PD)            |Parses formatted strings (reverse of
+prng	effolkronium/random	(1 C++, MIT)           |Convenient API for random
+prng	BareRose/ranxoshi256	**(1   C, PD)**          |**Xoshiro256 algorithm**
+prng	simongeilfus/SimplexNoise	(1 C++, BSD2)          |Collection of noise generators
+prng	DmitriBogdanov/UTL	(1 C++, MIT)           |Fast random for Monte-Carlo simulati
+profile	jonasmr/microprofile	(4 C++, PD)            |CPU (and GPU?) profiler, 1-3 header 
+profile	cyrus-and/prof	(1   C, MIT)           |Profiler for Linux
+profile	Celtoys/Remotery	(2   C, APACHE2)       |CPU/GPU profiler Win/Mac/Linux, usin
+raster	a-e-k/canvas_ity	(1 C++, ISC)           |2D rasterizer
+regex	wareya/Remimu	**(1   C, CC0)**         |**Regex engine**
+script	user1095108/lualite	(1 C++, MIT)           |Generate Lua bindings in C++
+script	edubart/minilua	(1   C, MIT)           |Single-file port of Lua scripting la
+script	paladin-t/my_basic	(2   C, MIT)           |Interpreter for a BASIC dialect scri
+script	pocketpy/pocketpy	(2   C, MIT)           |Portable Python 3.x Interpreter in M
+script	paladin-t/xpl	**(1   C, WTFPL2)**      |**X Programming Language**
+serial	voidah/archive	(1 C++, PD)            |Binary serialize & deserlize w/ STL 
+serial	dicroce/blob_tree	(1 C++, MIT)           |Binary tree serializer
+serial	felixguendling/cista	(1 C++, MIT)           |Cross-platform high performance zero
+serial	earonesty/qserial	(1 C++, BSD3)          |Schema-driven serialization library
+serial	cbeck88/visit_struct	(2 C++, BOOST)         |Struct-field reflection
+string	BradBenJoya/bbj_string	**(1   C, PD)**          |**Simple string library**
+string	jwlodek/csplit	(1   C, MIT)           |String splitting and processing sing
+string	gingerBill/gb	**(1   C, PD)**          |**Dynamic strings**
+string	mikejsavage/ggformat	(2 C++, ISC)           |Printf replacement
+string	pantor/inja	(1 C++, MIT)           |Template engine
+string	wooorm/levenshtein.c	(2   C, MIT)           |Compute edit distance between two st
+string	adamyaxley/Obfuscate	(1 C++, PD)            |Guaranteed compile-time string liter
+string	ocornut/Str	(1 C++, PD)            |Simple C++ string type with an optio
+string	maxim2266/str	(2   C, BSD)           |Yet another string library for C lan
+string	sawickiap/str_view	(1 C++, MIT)           |Null-termination-aware string-view c
+string	c42f/tinyformat	(1 C++, BOOST)         |Typesafe printf
+string	sheredom/utf8.h	**(1   C, PD)**          |**UTF-8 string library**
+svg	adishavit/simple-svg	(1 C++, BSD3)          |Easy to use SVG library
+sys	eduardsui/doops	**(1   C, PD)**          |**Event loop library**
+sys	Vesteria-Coding/dotenv	(1 C++, Apache2)       |Lightweight .env File Loader Library
+sys	rofl0r/endianness.h	**(1   C, PD)**          |**Endianness conversion and detect
+sys	ZhengqiaoWang/JArgsParser	(1 C++, MIT)           |Arguments parser
+sys	agauniyal/rang	(1 C++, PD)            |Cross-platform colored console text
+sys	time-killer-games/xproc	(2 C++, MIT)           |Foreign Process Information
+thread	DanEngelbrecht/bikeshed	(1   C, MIT)           |Cross-platform lock free fixed memor
+ui	nicbarker/clay	(1   C, ZLIB)          |High performance 2D UI layout librar
+ui	ocornut/imgui	(9 C++, MIT)           |An immediate-mode GUI formerly named
+ui	ronen25/libcmdf	**(1   C, PD)**          |**A small library for writing CLI 
+ui	antirez/linenoise	(2   C, BSD)           |Terminal readline w/ history etc
+ui	Immediate-Mode-UI/Nuklear	**(1   C, PD)**          |**Minimal GUI toolkit**
+ui	joshuarubin/wcwidth9	(1   C, APACHE2)       |Platform independent wcwidth with fu
+ui	zserge/webview	(1   C, MIT)           |Cross-platform webview library
+unit	catchorg/Catch2	(1 C++, BOOST)         |Unit testing
+unit	philsquared/Catch	(1 C++, BOOST)         |Unit testing
+unit	fdefelici/clove-unit	(1   C, MIT)           |Unit testing
+unit	onqtam/doctest	(1 C++, MIT)           |Unit testing
+unit	imb/fctx	(1   C, BSD)           |Unit testing
+unit	silentbicycle/greatest	(1   C, ISC)           |Unit testing
+unit	dascandy/hippomocks	(1 C++, LGPL)          |Unit testing
+unit	squarewave/labrat	**(1   C, PD)**          |**Unit testing**
+unit	codeplea/minctest	(1   C, ZLIB)          |Unit testing
+unit	nemequ/munit	(1   C, MIT)           |Unit testing
+unit	colinbarry/picotest	(1   C, MIT)           |Unit testing
+unit	christophercrouzet/rexo	**(1   C, PD)**          |**Framework for C89/C++ featuring 
+unit	rollbear/trompeloeil	(1 C++, BOOST)         |Unit testing
+unit	sheredom/utest.h	**(1   C, PD)**          |**Unit testing**
+unit	evolutional/utest	(1   C, MIT)           |Unit testing
+unit	ir33k/walter	**(1   C, PD)**          |**Unit testing**
+uuid	gpakosz/uuid4	(2   C, WTFPL2-MIT)    |UUID v4 generator
+uuid	wc-duck/uuid_h	(1   C, ZLIB)          |UUID generator
+vector	jobtalle/ccVector	**(1   C, PD)**          |**Vector, quaternion and matrix ma
+vector	StrangeZak/Handmade-Math	**(1   C, PD)**          |**Vector math**
+vector	dagostinelli/hypatia	(1   C, MIT)           |Vector/matrix/quaternion math
+vector	sgorsten/linalg	(1 C++, PD)            |Vector/matrix/quaternion math
+vector	ilyak/linalg	(1   C, ISC)           |Vector/matrix/quaternion math
+video	phoboslab/pl_mpeg	(1   C, MIT)           |MPEG1 video and audio decoder
+xml	leethomason/tinyxml2	(2 C++, ZLIB)          |Simple, small, efficient, C++ XML pa
+yaml	jimmiebergmann/mini-yaml	(2 C++, MIT)           |YAML parser and serializer
+file	OUIsolutions/DoTheWorld	(1   C, MIT)    |File and folder utilities
+net	OUIsolutions/CWebStudio	(1   C, MIT)    |WebServer with embedded JSON/HTML utilities
+pack	facebook/zstd	(?   C, BSD3)   |Fast real-time compression algorithm
+sys	anzz1/cpuid	(1   C, ???)    |Cross-platform cpuid intrinsic
+sys	anzz1/iathook	(1   C, ???)    |Import address table hooking library (x86/x
