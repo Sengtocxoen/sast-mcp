@@ -21,6 +21,7 @@ from typing import Any, Dict, List
 from flask import Flask, request, jsonify
 
 from core import execute_command, validate_scan_target, run_scan_in_thread
+from hunt import evidence as hunt_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +121,20 @@ def run_go_fuzz(params: Dict[str, Any]) -> Dict[str, Any]:
             "return_code": rc,
             "timed_out": res.get("timed_out", False),
         }
+
+        # "0 crashes" is not a result unless something proves the target ran.
+        # A build failure, a dead process or a harness stuck on the filesystem
+        # all report exactly what a clean run reports - see hunt/evidence.py and
+        # section 4 of docs/hunt-pipeline/ARCHITECTURE.md, where six such
+        # verdicts turned out never to have been tests (two hid real bugs).
+        proof = hunt_evidence.validate_fuzz_log(output)
+        entry["execs"] = proof["execs"]
+        entry["exec_per_sec"] = proof["exec_per_sec"]
+        entry["proven_run"] = proof["ran"]
+        if proof["flags"]:
+            entry["evidence_flags"] = proof["flags"]
+        if proof["hints"]:
+            entry["evidence_hints"] = proof["hints"]
         if is_crash:
             crashed += 1
             entry["failure"] = _summarize_failure(output)
@@ -136,17 +151,31 @@ def run_go_fuzz(params: Dict[str, Any]) -> Dict[str, Any]:
             entry["log_tail"] = output[-1500:]
         results.append(entry)
 
-    return {
+    # A target that neither crashed nor proved it executed tells you nothing.
+    unproven = [e["func"] for e in results if not e["crashed"] and not e.get("proven_run")]
+    clean_admissible = bool(results) and crashed == 0 and not unproven
+
+    out = {
         "success": True,
         "engine": "go",
         "target": root,
         "fuzztime_per_target": fuzztime,
         "targets_discovered": len(discovered),
         "targets_crashed": crashed,
+        "targets_unproven": unproven,
+        "clean_claim_admissible": clean_admissible,
         "results": results,
-        "summary": {"targets": len(discovered), "crashed": crashed},
+        "summary": {"targets": len(discovered), "crashed": crashed,
+                    "unproven": len(unproven)},
         "note": "a crashed target is a confirmed reproducer (crasher_input); triage reachability from untrusted input before reporting",
     }
+    if unproven:
+        out["warning"] = (
+            f"{len(unproven)} target(s) reported no crash but produced no execution count: "
+            f"{', '.join(unproven[:5])}. Do NOT read this as clean - check the build and "
+            f"POST the log to /api/hunt/evidence for the full assessment."
+        )
+    return out
 
 
 def register(app: Flask) -> None:
