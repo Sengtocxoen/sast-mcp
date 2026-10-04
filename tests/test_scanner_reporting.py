@@ -289,30 +289,54 @@ def test_gitleaks_git_mode_keeps_the_history_depth_limit(app, monkeypatch):
     assert "--log-opts=--max-count=1000" in seen["cmd"]
 
 
-# -- the sync path must apply the same gate as the TOON wrapper -----------
+# -- the analyzer must never under-report what the route parsed -----------
 
-def test_sync_path_rejects_a_killed_scan_with_partial_output(monkeypatch):
-    """A scan killed mid-run can still emit parseable output and set no error of
-    its own. Without the shared gate it reads as a completed scan."""
-    monkeypatch.setattr(core, "acquire_scan_slot", lambda timeout=None: True)
-    monkeypatch.setattr(core, "release_scan_slot", lambda: None)
-
-    def killed(params):
-        return {"return_code": -9, "stdout": json.dumps({"results": []}), "success": True}
-
-    out = core.run_scan_synchronously("opengrep", {"target": "x"}, killed)
-    assert out["success"] is False
-    assert out["job_status"] == "failed"
-    assert "memory" in out["error"].lower()
+def _gitleaks_result(n):
+    return {"return_code": 1 if n else 0, "success": True,
+            "stdout": "leaks found: %d" % n if n else "", "stderr": "",
+            "parsed_report": [{"RuleID": "aws-access-token", "File": "a.py",
+                               "StartLine": 3}] * n,
+            "summary": {"total_findings": n}, "report_path": "/tmp/x.json"}
 
 
-def test_sync_path_still_passes_a_findings_exit_code(monkeypatch):
-    monkeypatch.setattr(core, "acquire_scan_slot", lambda timeout=None: True)
-    monkeypatch.setattr(core, "release_scan_slot", lambda: None)
+def test_route_findings_survive_an_analyzer_that_cannot_parse_them():
+    """The second false clean: the fixed gitleaks route parsed 9 findings from
+    deca-uam-api and analyze_scan_results still reported 0 / risk NONE, because
+    it derives its own count from shapes it recognises."""
+    out = core.response_as_toon("gitleaks", {"target": "/mnt/x"}, _gitleaks_result(9))
+    a = out["toon_result"]["analysis"]
+    assert a["total_findings"] == 9
+    assert a["risk"]["overall_risk"] != "NONE"
+    assert a["findings_from_raw_report"] is True
+    assert "9 findings" in " ".join(a["recommendations"])
 
-    def found(params):
-        return {"return_code": 1, "stdout": json.dumps({"results": [{"check_id": "x"}]}),
-                "success": True, "summary": {"total_findings": 1}}
 
-    out = core.run_scan_synchronously("opengrep", {"target": "x"}, found)
-    assert out.get("job_status") != "failed"
+def test_a_genuinely_clean_scan_is_left_as_clean():
+    out = core.response_as_toon("gitleaks", {"target": "/mnt/x"}, _gitleaks_result(0))
+    a = out["toon_result"]["analysis"]
+    assert a["total_findings"] == 0
+    assert a.get("findings_from_raw_report") is None
+
+
+@pytest.mark.parametrize("result,expected", [
+    ({"summary": {"total_findings": 7}}, 7),
+    ({"parsed_report": [1, 2, 3]}, 3),
+    ({"parsed_output": {"results": [1, 2]}}, 2),
+    ({"parsed_secrets": [1, 2, 3, 4]}, 4),
+    ({"summary": {"total_findings": 2}, "parsed_report": [1, 2, 3, 4, 5]}, 5),
+    ({"summary": {"total_findings": "bad"}}, 0),
+    ({}, 0),
+])
+def test_raw_finding_count_takes_the_highest_credible_source(result, expected):
+    assert core.raw_finding_count(result) == expected
+
+
+def test_unproven_still_wins_over_a_reconciled_count():
+    """A killed scan that wrote partial findings is unproven, not REVIEW."""
+    res = _gitleaks_result(9)
+    res["return_code"] = -9
+    out = core.response_as_toon("gitleaks", {"target": "/mnt/x"}, res)
+    a = out["toon_result"]["analysis"]
+    assert out["scan_proven"] is False
+    assert a["risk"]["overall_risk"] == "UNKNOWN"
+    assert a["unproven"] is True

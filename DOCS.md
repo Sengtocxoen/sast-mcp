@@ -250,3 +250,37 @@ MCP tools: `find_repos`, `list_mounts`, `reload_mounts`.
 deployment's folder names. They derive from `MOUNT_POINT`, and are overridden by
 `SAST_RESULTS_DIR` / `REPO_SRC_DIR`. `RESOLA_SRC_DIR` is still read as an alias,
 so existing `.env` files keep working.
+
+## 11. What a secret scan actually covers (working tree vs git history)
+
+These answer different questions, and mixing them inflates or hides findings.
+
+| | reads | sees | misses |
+|---|---|---|---|
+| **gitleaks** (`/api/secrets/gitleaks`) | git objects, `--log-opts=--max-count=1000` by default | every secret ever committed in that range, including ones deleted from HEAD | anything only in an uncommitted working tree |
+| **working-tree scans** (`/api/repo-scan`, `opengrep_scan`, anything handed a directory) | files on disk | untracked and **gitignored** files | history — a secret removed from HEAD is invisible |
+
+Two consequences worth knowing before triaging a result:
+
+**A working-tree scan will flag your local dev files.** `/api/repo-scan` stages
+with a streamed `tar`, which copies the working tree, so `.env` and friends are
+included even when gitignored. During the 2026-10-04 Deca/IPS sweep, opengrep
+reported AWS keys, JWTs and generic secrets in `deca-agents/apps/server/.env` —
+that file is untracked *and* gitignored, so it is a developer's local config, not
+an exposure. Confirm with:
+
+```sh
+git -C <repo> ls-files --error-unmatch <path>   # exit 0 = committed, so a real leak
+git -C <repo> check-ignore -q <path>            # exit 0 = gitignored
+```
+
+**Deleting a file does not unleak it.** A secret removed from HEAD is still in
+the history and still needs rotating. The same sweep found 46 high-confidence
+secrets that exist only in history (22 removed from HEAD, 24 with the file
+deleted), going back to 2018. Classify each finding as `LIVE_AT_HEAD`,
+`HISTORY_ONLY` or `FILE_GONE_AT_HEAD` before deciding urgency — only the first
+needs a code change, but all three need rotation.
+
+**Also**: `--log-opts` is invalid in `--no-git` mode. Pass `--no-git` to scan a
+directory that is not a repo (or a tree of repos) and the endpoint will omit the
+history-depth limit automatically.

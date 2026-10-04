@@ -36,6 +36,7 @@ from typing import Any, Dict, List, Optional, Set
 from flask import Flask, request, jsonify
 
 import correlate
+import staging
 import tool_registry
 from config import (
     ALLOWED_MOUNTS,
@@ -102,8 +103,9 @@ _TOOL_TIMEOUT = 900
 _FAST_TIMEOUT = 300
 
 # Filesystem types where per-file I/O is slow enough to justify staging a copy.
-_SLOW_FSTYPES = {"fuse", "fuse.vmhgfs-fuse", "vmhgfs", "vboxsf", "cifs", "smb3",
-                 "nfs", "nfs4", "9p", "fuseblk", "sshfs"}
+# Shared with the per-tool endpoints via server/staging.py, so a filesystem
+# added in one place is slow in both.
+_SLOW_FSTYPES = staging.SLOW_FSTYPES
 
 
 def _default_base_dir() -> str:

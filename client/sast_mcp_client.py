@@ -52,7 +52,7 @@ import sys
 import os
 import argparse
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 import asyncio
 import aiohttp
 
@@ -599,8 +599,15 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
         Execute Gitleaks for detecting secrets and sensitive information in git repositories.
         Fast and accurate secret scanner for git repos, files, and directories.
 
+        Scope note: gitleaks reads GIT HISTORY, not the working tree. It finds
+        secrets in commits (including ones deleted from HEAD) but never sees an
+        untracked or gitignored file. Working-tree scanners (repo_scan,
+        opengrep_scan) are the mirror image. See DOCS.md section 11.
+
         Args:
-            target: Path to git repository or directory to scan
+            target: Path to git repository or directory to scan. Pass
+                    additional_args="--no-git" for a plain directory or a tree of
+                    repos; the history-depth limit is then omitted automatically.
             config: Path to gitleaks config file for custom rules
             report_format: Output format (json, csv, sarif)
             report_path: Path to save the report file
@@ -1590,6 +1597,286 @@ def setup_mcp_server(sast_client: SASTToolsClient) -> FastMCP:
             - features: Available analysis features
         """
         return await sast_client.safe_get("api/analysis/toon-status")
+
+    # ========================================================================
+    # HUNT PIPELINE (first-party: the analysis lives in this repo, not in a
+    # third-party binary). See docs/hunt-pipeline/ARCHITECTURE.md.
+    # ========================================================================
+
+    @mcp.tool()
+    async def hunt_catalog(
+        catalog: str = "parsers",
+        tags: str = "parsers",
+        limit: int = 0,
+        refresh: bool = False
+    ) -> Dict[str, Any]:
+        """
+        List candidate libraries to attack, by category. Step 1 of target gating.
+
+        Turns a single-file-library catalog into deduplicated owner/name repo slugs,
+        filtered to the categories that actually parse untrusted input (image, audio,
+        3d, mesh, pack, parse, file, serial, video). In the campaign this took 297
+        repos down to 62 before a single request was spent on gating.
+
+        Args:
+            catalog: 'parsers' (the committed 62), 'all' (the committed 297),
+                     'readme' (fetch nothings/single_file_libs live), or a raw README URL
+            tags: 'parsers' for the default parser categories, 'all' to also include
+                  the 2d/json/net tags that were never gated, or a comma-separated list
+            limit: Return at most N entries (0 = all)
+            refresh: Bypass the cache when fetching a live README
+
+        Returns:
+            Repo slugs with their category tags and counts, ready for hunt_target_gate
+        """
+        data = {"catalog": catalog, "tags": tags, "limit": limit, "refresh": refresh}
+        return await sast_client.safe_post("api/hunt/catalog", data)
+
+    @mcp.tool()
+    async def hunt_target_gate(
+        repos: Optional[List[str]] = None,
+        catalog: str = "parsers",
+        tags: str = "parsers",
+        local_root: str = "",
+        max_repos: int = 25,
+        workers: int = 6,
+        gates: Optional[List[str]] = None,
+        max_age_days: int = 400,
+        include_issues: bool = True,
+        fail_fast: bool = True,
+        background: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Stage A target gating: decide WHICH library is worth attacking.
+
+        This is the measured high-precision stage of the hunt pipeline: 297 repos ->
+        62 parsers -> 2 survivors, and both survivors yielded findings (~100%
+        precision). Pattern-matching code for bug shapes measured under 2% by
+        comparison, so this is where static-analysis budget belongs.
+
+        Five independent gates, each of which rejected something real:
+          G1 maintained    - last COMMIT date (never pushed_at, which over-reports)
+          G2 not saturated - OSS-Fuzz project.yaml must 404 (killed stb, lz4, miniz)
+          G3 no harness    - no in-repo *fuzz* files (killed bddisasm, qoi, minimp3)
+          G4 uncontested   - distinct open-PR authors (killed nanosvg: 36 authors)
+          GHSA             - no advisory ids in-tree (flagged wildmidi as swept)
+
+        G3 and GHSA need a checkout; without local_root they report 'skip' rather
+        than inventing a pass. A gate that errors is never counted as a pass, so a
+        'survivor' is a repo that provably cleared every gate that ran.
+
+        Costs ~3 metered GitHub requests per repo. The unauthenticated ceiling is 60
+        requests/hour, so set GITHUB_TOKEN on the server for 5,000/hour; the run
+        stops cleanly at the ceiling and returns a `not_gated` resume list.
+
+        Args:
+            repos: Explicit 'owner/name' slugs to gate (takes precedence over catalog)
+            catalog: Where to get repos if none given: 'parsers', 'all', 'readme', or a URL
+            tags: Category filter when pulling from a catalog
+            local_root: Directory holding checkouts, so G3/GHSA can be evaluated
+            max_repos: Cap on repos gated in one call (budget protection)
+            workers: Concurrent repos (1-16)
+            gates: Subset of ['G1','G2','G3','G4','GHSA'] to run
+            max_age_days: G1 staleness threshold
+            include_issues: Also read open-issue count for G4 (one extra request/repo)
+            fail_fast: Stop a repo at its first reject to save budget
+            background: Run as a job (use for a whole-catalog sweep)
+
+        Returns:
+            Per-repo verdicts with evidence, the survivor list, rejects by gate,
+            remaining API budget, and a resume list if the ceiling was hit
+        """
+        data: Dict[str, Any] = {
+            "catalog": catalog, "tags": tags, "max_repos": max_repos,
+            "workers": workers, "max_age_days": max_age_days,
+            "include_issues": include_issues, "fail_fast": fail_fast,
+            "background": background,
+        }
+        if repos:
+            data["repos"] = repos
+        if local_root:
+            data["local_root"] = local_root
+        if gates:
+            data["gates"] = gates
+        return await sast_client.safe_post("api/hunt/target-gate", data)
+
+    @mcp.tool()
+    async def hunt_shape_scan(
+        target: str,
+        shapes: Optional[List[str]] = None,
+        allow_retired: bool = False,
+        workers: int = 8,
+        max_hits: int = 500
+    ) -> Dict[str, Any]:
+        """
+        Stage B shape scanning: C memory-safety patterns. LOW YIELD BY MEASUREMENT.
+
+        Read this before using it: in the campaign this stage produced 60 hits and
+        exactly one real bug, which was already known. Use hunt_target_gate instead
+        if you have budget for only one. It is kept because a cheap sweep over a NEW
+        codebase occasionally pays, and because the negative result is worth knowing.
+
+        Shapes:
+          scan2 - narrowing cast of a parsed size used as a signed bound (assetsys).
+                  1 of 7 hits real. The default, and the only field-validated one.
+          scan1 - malloc(X) then a copy to an offset destination with length X
+                  (paldither). Never produced a finding; unvalidated.
+          scan3 - allocation size from a multiplication of int-width operands.
+                  RETIRED: 53 hits, 0 real. Requires allow_retired=True.
+
+        Every scanner self-tests against a known-positive first, and a zero-hit
+        result is only reported as admissible if that self-test passed - otherwise a
+        silently broken pattern looks exactly like clean code. Hits carry
+        likely_false_positive when a guard is visible nearby.
+
+        Args:
+            target: Path to a checked-out C/C++ tree (must be under an allowed mount)
+            shapes: Which to run, e.g. ['scan2'] (default), ['scan1','scan2']
+            allow_retired: Required to run scan3 at all
+            workers: Concurrent file readers (1-16)
+            max_hits: Cap on returned hits
+
+        Returns:
+            Hits with the code, the bound/size expression, why it matters, and
+            per-scanner measured precision so a hit is not over-trusted
+        """
+        data: Dict[str, Any] = {
+            "target": target, "allow_retired": allow_retired,
+            "workers": workers, "max_hits": max_hits,
+        }
+        if shapes:
+            data["shapes"] = shapes
+        return await sast_client.safe_post("api/hunt/shape-scan", data)
+
+    @mcp.tool()
+    async def hunt_evidence_check(
+        log: str = "",
+        log_path: str = "",
+        claimed_crashes: int = 0,
+        object_paths: Optional[List[str]] = None,
+        harness_source: str = "",
+        harness_path: str = "",
+        jobs: int = 1,
+        poc_build_command: str = "",
+        signal: str = "store",
+        assert_source: str = "",
+        assert_line: int = 0
+    ) -> Dict[str, Any]:
+        """
+        Prove a fuzzing run actually happened before believing it found nothing.
+
+        A fuzzer that never started reports zero crashes, and so does a fuzzer that
+        found none. In the campaign six '0 crashes' verdicts were never tests at all
+        (a backgrounded process died when the tool call returned) and two of those
+        targets were sitting on real bugs. This is the check that separates the two.
+
+        What it catches:
+          - no INITED line / no execution count    -> the run never happened
+          - exec/s below ~50                        -> harness is filesystem-bound
+            (vgmstream: 14,309 execs in 40 minutes; ~40 lines of memory-backed
+            reader took it to 3,934 exec/s AND raised coverage 3,689 -> 4,087)
+          - cov: under ~100                         -> target objects uninstrumented
+            (fluidsynth reported cov: 20, which was the harness alone; a clean
+            rebuild with CMAKE_C_FLAGS_DEBUG gave 12,990 counters and cov: 1480)
+          - zero sanitizer_cov symbols in an object -> the fuzzer is blind to it
+          - a timeout under -jobs>1                 -> re-run single-threaded first
+            (5 campaign 'timeouts' completed in under 250ms alone)
+          - a store-signal PoC built above -O0      -> dead-store elimination can
+            delete the overflowing write, and the PoC then reports 'survived'
+          - assert(false) with a correct path below -> not reportable under NDEBUG
+            (OpenFBX: 6 crashes, all clean. dmc_unrar: same shape, no fallback, real)
+
+        Args:
+            log: Fuzzing log text (libFuzzer or Go native)
+            log_path: Read the log from a file instead (must be under an allowed mount)
+            claimed_crashes: How many crashes the run claims to have found
+            object_paths: Target .o/.a files to check for coverage instrumentation
+            harness_source: Harness source text, to check for per-execution file I/O
+            harness_path: Read the harness from a file instead
+            jobs: The -jobs value used, so parallel timeouts can be flagged
+            poc_build_command: The PoC compile command, to validate its -O level
+            signal: 'store' (needs -O0) or 'asan' (optimisation-independent)
+            assert_source: Source text or path for assert triage
+            assert_line: The assert's line number
+
+        Returns:
+            A verdict of proven_clean / unproven / crash, the blocking flags, and
+            concrete remediation hints for each one
+        """
+        data: Dict[str, Any] = {
+            "log": log, "claimed_crashes": claimed_crashes, "jobs": jobs,
+            "harness_source": harness_source, "signal": signal,
+        }
+        if log_path:
+            data["log_path"] = log_path
+        if harness_path:
+            data["harness_path"] = harness_path
+        if object_paths:
+            data["object_paths"] = object_paths
+        if poc_build_command:
+            data["poc_build_command"] = poc_build_command
+        if assert_source and assert_line:
+            data["assert_source"] = assert_source
+            data["assert_line"] = assert_line
+        return await sast_client.safe_post("api/hunt/evidence", data)
+
+    @mcp.tool()
+    async def hunt_disclosure_preflight(
+        repos: Optional[List[str]] = None,
+        repo: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Find out where a vulnerability report can actually be sent, before writing it.
+
+        Run this BEFORE drafting the report. Every report in the campaign originally
+        said 'open a private GHSA' - then the endpoint was actually checked and
+        private vulnerability reporting was enabled:false on 11 of 12 targets, making
+        the instruction impossible to follow.
+
+        It also reads SECURITY.md, which changes what the report must contain:
+          - vgmstream's has an explicit LLM clause ('LLM-generated reports or patches
+            with no clear human participation may be closed without warning') and
+            calls DoS 'not huge'
+          - raylib's directs reports to public Issues, so asking for an embargo
+            contradicts the maintainer's own policy
+
+        Costs one metered GitHub request per repo; the policy fetch is free. An
+        ambiguous answer always lands on 'no_documented_channel' rather than a
+        guessed route.
+
+        Args:
+            repos: Several 'owner/name' slugs (max 20)
+            repo: A single 'owner/name' slug
+
+        Returns:
+            The route that provably exists (private_ghsa / email / public_issue /
+            no_documented_channel), blocking policy clauses with quotes, required
+            actions, and whether the report is ready to send
+        """
+        data: Dict[str, Any] = {}
+        if repos:
+            data["repos"] = repos
+        elif repo:
+            data["repo"] = repo
+        return await sast_client.safe_post("api/hunt/disclosure", data)
+
+    @mcp.tool()
+    async def hunt_budget(repos: int = 25) -> Dict[str, Any]:
+        """
+        Check the GitHub API budget left, and what a gating run of N repos will cost.
+
+        The unauthenticated ceiling is 60 requests/hour, which is fewer than one per
+        catalog repo - so check this before gating a category, and set GITHUB_TOKEN
+        on the server to lift it to 5,000/hour.
+
+        Args:
+            repos: How many repos you intend to gate, for the cost estimate
+
+        Returns:
+            Remaining requests, reset time, cache hits, and repos-per-hour at the
+            current authentication level
+        """
+        return await sast_client.safe_get(f"api/hunt/budget?repos={repos}")
 
     return mcp
 

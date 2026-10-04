@@ -971,6 +971,61 @@ def run_scan_synchronously(tool_name: str, params: Dict[str, Any], scan_function
 MAX_STDOUT_FOR_ANALYSIS = 500_000  # 500KB — cap stdout before toon analysis to avoid OOM on huge outputs
 
 
+def raw_finding_count(result: Dict[str, Any]) -> int:
+    """How many findings the ROUTE saw, independent of the TOON analyzer.
+
+    The analyzer derives its own count from shapes it recognises, so a tool
+    whose output it cannot parse comes back as zero findings and risk NONE even
+    when the route parsed a full report. Measured: the fixed gitleaks route
+    produced 9 findings from deca-uam-api (summary.total_findings = 9,
+    parsed_report with 9 entries) and analyze_scan_results reported 0.
+    """
+    counts = [0]
+    summary = result.get("summary")
+    if isinstance(summary, dict):
+        n = summary.get("total_findings")
+        if isinstance(n, int):
+            counts.append(n)
+    report = result.get("parsed_report")
+    if isinstance(report, list):
+        counts.append(len(report))
+    parsed = result.get("parsed_output")
+    if isinstance(parsed, dict) and isinstance(parsed.get("results"), list):
+        counts.append(len(parsed["results"]))
+    for key in ("parsed_secrets", "findings"):
+        value = result.get(key)
+        if isinstance(value, list):
+            counts.append(len(value))
+    return max(counts)
+
+
+def _reconcile_finding_count(toon: Dict[str, Any], tool_name: str, raw_count: int) -> None:
+    """Replace a zero analyzer count with the count the route actually parsed.
+
+    Reporting fewer findings than the tool found is the one direction that is
+    never safe, so the higher number wins. Severity cannot be derived from a
+    report the analyzer could not read, so the risk is marked for review rather
+    than left at NONE.
+    """
+    analysis = toon.setdefault("analysis", {})
+    analysis["total_findings"] = raw_count
+    analysis["findings_from_raw_report"] = True
+    analysis["risk"] = {
+        "overall_risk": "REVIEW",
+        "max_severity": "UNKNOWN",
+        "risk_score": None,
+        "risk_factors": [
+            f"{tool_name} reported {raw_count} findings that the result analyzer "
+            f"could not classify"
+        ],
+    }
+    analysis["recommendations"] = [
+        f"{tool_name} found {raw_count} findings. The analyzer could not parse them, so "
+        f"severities are unknown and this is NOT a clean result.",
+        "Read the tool's own report (report_path / parsed_report) for the detail.",
+    ]
+
+
 def _mark_unproven(toon: Dict[str, Any], tool_name: str, reason: str) -> None:
     """Overwrite the reassuring parts of a TOON analysis for a scan that failed.
 
@@ -1060,6 +1115,12 @@ def response_as_toon(
         toon = create_toon_analysis_result(
             full, analysis, include_raw_findings=include_raw_findings, max_findings=max_findings
         )
+        # Never report fewer findings than the route parsed. A tool whose output
+        # the analyzer does not understand would otherwise come back as risk
+        # NONE with a full report sitting in the raw result.
+        raw_count = raw_finding_count(result)
+        if raw_count > 0 and not (toon.get("analysis") or {}).get("total_findings"):
+            _reconcile_finding_count(toon, tool_name, raw_count)
         if not proven:
             _mark_unproven(toon, tool_name, unproven_reason)
         return {

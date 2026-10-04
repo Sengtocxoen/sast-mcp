@@ -10,6 +10,8 @@ from typing import Any, Dict
 
 from flask import Flask, request, jsonify
 
+import staging
+
 from config import (
     BANDIT_TIMEOUT,
     FORCE_SYNC_SCANS,
@@ -163,7 +165,18 @@ def _opengrep_scan(params: Dict[str, Any]) -> Dict[str, Any]:
             pr = None
     if pr is not None:
         result = pr
+        staged = staging.Staged(resolved_target, resolved_target, False,
+                                reason="parallel sharding path handles its own IO")
     else:
+        # Scanning a network/fuse share in place costs thousands of per-file
+        # round trips; a streamed tar to local disk is one sequential read.
+        # Measured on the Deca/IPS trees: ~240s per repo in place versus ~50s
+        # staged, with the largest repos never finishing in place at all.
+        # /api/repo-scan has always done this - this is the per-tool endpoint
+        # catching up. "auto" is a no-op when the source is already local.
+        staged = staging.stage(resolved_target, mode=str(params.get("stage", "auto")),
+                               tool=engine)
+        scan_path = staged.path
         command = f"{engine} scan --config={shlex.quote(config)}"
         if lang:
             command += f" --lang={shlex.quote(lang)}"
@@ -174,11 +187,20 @@ def _opengrep_scan(params: Dict[str, Any]) -> Dict[str, Any]:
             command += f" {perf}"
         if safe_extra:
             command += f" {safe_extra}"
-        command += f" {shlex.quote(resolved_target)}"
-        result = execute_command(command, timeout=OPENGREP_TIMEOUT)
+        command += f" {shlex.quote(scan_path)}"
+        try:
+            result = execute_command(command, timeout=OPENGREP_TIMEOUT)
+            # Findings point at the staging dir; rewrite them to the caller's
+            # path before anything parses them, or every file reference is wrong.
+            for key in ("stdout", "stderr"):
+                if result.get(key):
+                    result[key] = staged.remap(result[key])
+        finally:
+            staged.cleanup()
     result["original_path"] = target
     result["resolved_path"] = resolved_target
     result["config_used"] = config
+    result.update(staged.info())
     if clamped["notes"]:
         result["flag_adjustments"] = clamped["notes"]
     # Opengrep/Semgrep exit codes:
