@@ -896,6 +896,15 @@ def run_scan_synchronously(tool_name: str, params: Dict[str, Any], scan_function
         finally:
             release_scan_slot()
         completed = datetime.now()
+        # Apply the same trustworthiness gate the TOON wrapper uses, so the sync
+        # path cannot report a killed or timed-out scan as a successful one. The
+        # route-level checks catch the common shapes; this catches a scan that
+        # was killed while still emitting parseable partial output, which sets no
+        # error key of its own and would otherwise read as a completed scan.
+        proven, why = scan_trustworthy(tool_name, result)
+        if not proven and not result.get("error"):
+            result["error"] = why
+            result["scan_proven"] = False
         # Check explicit error key only — do NOT rely on `success` flag, because tools like
         # opengrep/semgrep/bandit return exit code 1 when findings are present (not a real error).
         # CommandExecutor sets success=False for any non-zero exit, so using it here would
