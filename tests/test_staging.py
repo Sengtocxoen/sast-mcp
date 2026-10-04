@@ -41,7 +41,9 @@ def test_local_source_is_not_staged(tmp_path):
 
 
 def test_slow_source_is_staged(tmp_path, monkeypatch):
-    (tmp_path / "a.py").write_text("x = 1\n")
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.py").write_text("x = 1\n")
     monkeypatch.setattr(staging, "is_slow", lambda p: True)
     monkeypatch.setattr(staging, "fstype", lambda p: "fuse.vmhgfs-fuse")
     calls = []
@@ -53,7 +55,9 @@ def test_slow_source_is_staged(tmp_path, monkeypatch):
             f.write("x = 1\n")
         return {"return_code": 0, "stderr": ""}
 
-    st = staging.stage(str(tmp_path), mode="auto", base_dir=str(tmp_path / "stage"),
+    # The staging root is a SIBLING of the source: a root inside the target
+    # would have tar copying the destination into itself.
+    st = staging.stage(str(src), mode="auto", base_dir=str(tmp_path / "stage"),
                        executor=fake_exec)
     try:
         assert st.staged is True
@@ -71,7 +75,9 @@ def test_mode_never_scans_in_place(tmp_path, monkeypatch):
 
 
 def test_mode_always_stages_a_local_source(tmp_path, monkeypatch):
-    (tmp_path / "a.py").write_text("x = 1\n")
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.py").write_text("x = 1\n")
 
     def fake_exec(cmd, timeout=None):
         dest = cmd.split("tar -C ")[2].split(" ")[0].strip("'\"")
@@ -79,7 +85,7 @@ def test_mode_always_stages_a_local_source(tmp_path, monkeypatch):
             f.write("x = 1\n")
         return {"return_code": 0, "stderr": ""}
 
-    st = staging.stage(str(tmp_path), mode="always", base_dir=str(tmp_path / "s"),
+    st = staging.stage(str(src), mode="always", base_dir=str(tmp_path / "s"),
                        executor=fake_exec)
     try:
         assert st.staged is True
@@ -147,13 +153,15 @@ def test_remap_leaves_non_strings_alone():
 
 def test_staging_that_copies_nothing_falls_back_to_scanning_in_place(tmp_path, monkeypatch):
     """Staging must never be the reason a scan finds nothing."""
-    (tmp_path / "a.py").write_text("x = 1\n")
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.py").write_text("x = 1\n")
     monkeypatch.setattr(staging, "is_slow", lambda p: True)
-    st = staging.stage(str(tmp_path), mode="auto", base_dir=str(tmp_path / "s"),
+    st = staging.stage(str(src), mode="auto", base_dir=str(tmp_path / "s"),
                        executor=lambda cmd, timeout=None: {"return_code": 127, "stderr": "no tar"})
     assert st.staged is False
-    assert st.path == os.path.abspath(str(tmp_path))
-    assert "no files" in st.reason
+    assert st.path == os.path.abspath(str(src))
+    assert "exited 127" in st.reason
 
 
 def test_unusable_staging_dir_degrades_to_in_place(tmp_path, monkeypatch):
@@ -166,7 +174,9 @@ def test_unusable_staging_dir_degrades_to_in_place(tmp_path, monkeypatch):
 
 
 def test_cleanup_removes_the_copy_but_never_the_source(tmp_path, monkeypatch):
-    (tmp_path / "a.py").write_text("x = 1\n")
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.py").write_text("x = 1\n")
 
     def fake_exec(cmd, timeout=None):
         dest = cmd.split("tar -C ")[2].split(" ")[0].strip("'\"")
@@ -174,13 +184,13 @@ def test_cleanup_removes_the_copy_but_never_the_source(tmp_path, monkeypatch):
             f.write("x\n")
         return {"return_code": 0}
 
-    st = staging.stage(str(tmp_path), mode="always", base_dir=str(tmp_path / "s"),
+    st = staging.stage(str(src), mode="always", base_dir=str(tmp_path / "s"),
                        executor=fake_exec)
     copy = st.path
     assert os.path.isdir(copy)
     st.cleanup()
     assert not os.path.isdir(copy)
-    assert os.path.isfile(str(tmp_path / "a.py")), "the source must survive"
+    assert os.path.isfile(str(src / "a.py")), "the source must survive"
 
 
 def test_cleanup_of_an_unstaged_target_is_a_noop(tmp_path):
@@ -197,8 +207,10 @@ def test_context_manager_cleans_up(tmp_path):
             f.write("x\n")
         return {"return_code": 0}
 
-    (tmp_path / "a.py").write_text("x\n")
-    with staging.stage(str(tmp_path), mode="always", base_dir=str(tmp_path / "s"),
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.py").write_text("x\n")
+    with staging.stage(str(src), mode="always", base_dir=str(tmp_path / "s"),
                        executor=fake_exec) as st:
         copy = st.path
         assert os.path.isdir(copy)
@@ -250,3 +262,147 @@ def test_opengrep_scans_the_staged_copy_and_reports_source_paths(monkeypatch, tm
     assert reported == str(tmp_path / "a.py"), reported
     assert out["staged"] is True
     assert out["source_path"] == str(tmp_path)
+
+
+# -- a PARTIAL copy must never be used (fail-closed) ---------------------
+
+def _staging_exec(dest_files, rc=0, stderr="", timed_out=False):
+    """Simulate tar producing a given set of files in the destination."""
+    def fake_exec(cmd, timeout=None):
+        dest = cmd.split("tar -C ")[2].split(" ")[0].strip("'\"")
+        for name in dest_files:
+            p = os.path.join(dest, name)
+            os.makedirs(os.path.dirname(p), exist_ok=True) if os.path.dirname(p) else None
+            with open(p, "w") as f:
+                f.write("x\n")
+        return {"return_code": rc, "stderr": stderr, "timed_out": timed_out}
+    return fake_exec
+
+
+@pytest.fixture
+def slow_src(tmp_path, monkeypatch):
+    monkeypatch.setattr(staging, "is_slow", lambda p: True)
+    monkeypatch.setattr(staging, "fstype", lambda p: "fuse.vmhgfs-fuse")
+    src = tmp_path / "repo"
+    src.mkdir()
+    for n in ("a.py", "b.py", "c.py"):
+        (src / n).write_text("x = 1\n")
+    return src
+
+
+def test_a_truncated_copy_is_rejected(slow_src, tmp_path):
+    """Disk full mid-copy leaves a NON-EMPTY dest. Using it means scanning an
+    incomplete tree and reporting fewer findings with no error."""
+    st = staging.stage(str(slow_src), mode="auto", base_dir=str(tmp_path / "s"),
+                       executor=_staging_exec(["a.py"]))  # 1 of 3
+    assert st.staged is False
+    assert st.path == os.path.abspath(str(slow_src)), "must fall back to in place"
+    assert "1 of 3" in st.reason
+
+
+def test_a_complete_copy_is_accepted(slow_src, tmp_path):
+    st = staging.stage(str(slow_src), mode="auto", base_dir=str(tmp_path / "s"),
+                       executor=_staging_exec(["a.py", "b.py", "c.py"]))
+    try:
+        assert st.staged is True
+    finally:
+        st.cleanup()
+
+
+def test_nonzero_tar_exit_is_rejected(slow_src, tmp_path):
+    st = staging.stage(str(slow_src), mode="auto", base_dir=str(tmp_path / "s"),
+                       executor=_staging_exec(["a.py", "b.py", "c.py"], rc=2))
+    assert st.staged is False
+    assert "exited 2" in st.reason
+
+
+@pytest.mark.parametrize("msg", [
+    "tar: /tmp/x: Cannot write: No space left on device",
+    "tar: Error exit delayed from previous errors",
+    "tar: Unexpected EOF in archive",
+    "tar: a.py: Permission denied",
+])
+def test_tar_errors_on_stderr_are_rejected_even_at_exit_zero(slow_src, tmp_path, msg):
+    """A shell pipeline's status is the LAST command's, so a failure in the
+    sending tar exits 0 and is only visible in the text."""
+    st = staging.stage(str(slow_src), mode="auto", base_dir=str(tmp_path / "s"),
+                       executor=_staging_exec(["a.py", "b.py", "c.py"], rc=0, stderr=msg))
+    assert st.staged is False
+    assert "tar reported" in st.reason
+
+
+def test_a_timed_out_copy_is_rejected(slow_src, tmp_path):
+    st = staging.stage(str(slow_src), mode="auto", base_dir=str(tmp_path / "s"),
+                       executor=_staging_exec(["a.py", "b.py", "c.py"], timed_out=True))
+    assert st.staged is False
+    assert "timed out" in st.reason
+
+
+# -- staging root must not be a shared directory -------------------------
+
+def test_default_base_dir_is_per_user():
+    import tempfile as _t
+    d = staging._default_base_dir()
+    if os.path.realpath(d).startswith(os.path.realpath(_t.gettempdir())):
+        assert os.path.basename(d) != "sast-stage", "a fixed name in shared /tmp"
+        assert "sast-stage-" in os.path.basename(d)
+    else:
+        assert "sast-mcp" in d
+
+
+def test_base_dir_is_created_private(slow_src, tmp_path):
+    base = tmp_path / "s"
+    st = staging.stage(str(slow_src), mode="auto", base_dir=str(base),
+                       executor=_staging_exec(["a.py", "b.py", "c.py"]))
+    try:
+        if hasattr(os, "geteuid"):
+            assert not (os.stat(str(base)).st_mode & 0o022), "group/other writable"
+    finally:
+        st.cleanup()
+
+
+def test_a_symlinked_staging_root_is_refused(slow_src, tmp_path):
+    real = tmp_path / "elsewhere"
+    real.mkdir()
+    link = tmp_path / "base"
+    try:
+        os.symlink(str(real), str(link), target_is_directory=True)
+    except (OSError, NotImplementedError, AttributeError):
+        pytest.skip("symlinks not available")
+    st = staging.stage(str(slow_src), mode="auto", base_dir=str(link),
+                       executor=_staging_exec(["a.py", "b.py", "c.py"]))
+    assert st.staged is False
+    assert "symlink" in st.reason
+
+
+# -- excluded directories must be visible --------------------------------
+
+def test_a_staged_scan_declares_what_it_did_not_cover(slow_src, tmp_path):
+    """Staging skips vendor/node_modules/etc, so a staged scan covers less than
+    an in-place one. Reduced coverage is acceptable; silent reduction is not."""
+    st = staging.stage(str(slow_src), mode="auto", base_dir=str(tmp_path / "s"),
+                       executor=_staging_exec(["a.py", "b.py", "c.py"]))
+    try:
+        info = st.info()
+        assert "node_modules" in info["not_scanned_dirs"]
+        assert "vendor" in info["not_scanned_dirs"]
+        assert "NOT scanned" in info["coverage_note"]
+    finally:
+        st.cleanup()
+
+
+def test_an_in_place_scan_claims_no_exclusions(tmp_path):
+    (tmp_path / "a.py").write_text("x\n")
+    info = staging.stage(str(tmp_path), mode="never").info()
+    assert "not_scanned_dirs" not in info
+
+
+def test_exclusions_are_overridable(monkeypatch):
+    monkeypatch.setenv("STAGE_EXCLUDE", "node_modules")
+    skip = staging._exclude_dirs()
+    assert skip == frozenset({"node_modules", ".git"}), "vendor etc. now included"
+
+
+def test_git_cannot_be_un_excluded(monkeypatch):
+    monkeypatch.setenv("STAGE_EXCLUDE", "")
+    assert ".git" in staging._exclude_dirs()

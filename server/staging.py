@@ -57,6 +57,44 @@ STAGE_TIMEOUT = int(os.environ.get("STAGE_TIMEOUT", 900))
 STAGE_BASE_DIR = os.environ.get("STAGE_BASE_DIR", "")
 
 
+def _default_base_dir() -> str:
+    """A per-user staging root, not a shared one.
+
+    A staged copy is the caller's entire source tree, so the directory it lands
+    in matters. A fixed name under a world-writable /tmp can be pre-created or
+    symlinked by another local user, who would then receive the copy.
+    """
+    base = os.environ.get("XDG_CACHE_HOME")
+    if not base:
+        home = os.path.expanduser("~")
+        if home and home != "~" and os.path.isdir(home):
+            base = os.path.join(home, ".cache")
+    if base:
+        return os.path.join(base, "sast-mcp", "stage")
+    uid = getattr(os, "geteuid", lambda: "nouid")()
+    return os.path.join(tempfile.gettempdir(), f"sast-stage-{uid}")
+
+
+def _base_dir_defect(path: str) -> str:
+    """'' when the staging root is safe to write a source copy into."""
+    try:
+        if os.path.islink(path):
+            return "it is a symlink"
+        st = os.stat(path)
+        geteuid = getattr(os, "geteuid", None)
+        if geteuid is not None:  # POSIX only; st_uid is meaningless on Windows
+            if st.st_uid != geteuid():
+                return f"it is owned by uid {st.st_uid}, not {geteuid()}"
+            if st.st_mode & 0o022:
+                try:
+                    os.chmod(path, 0o700)
+                except OSError:
+                    return "it is writable by other users"
+    except OSError as e:
+        return f"it cannot be inspected ({e})"
+    return ""
+
+
 def fstype(path: str) -> str:
     """Filesystem type of the mount backing `path` ('' when undeterminable)."""
     try:
@@ -89,12 +127,15 @@ class Staged:
     """A scan target, possibly copied to local disk. Use as a context manager."""
 
     def __init__(self, path: str, source: str, staged: bool, reason: str = "",
-                 stderr: str = ""):
+                 stderr: str = "", excluded: Optional[frozenset] = None):
         self.path = path          # scan this
         self.source = source      # the caller's original path
         self.staged = staged
         self.reason = reason
         self.stderr = stderr
+        # What the copy left out. Only meaningful when staged; reported either
+        # way so coverage is never assumed.
+        self.excluded = frozenset(excluded or ())
 
     def remap(self, value: Any) -> Any:
         """Rewrite staged paths back to the original, in strings or structures.
@@ -131,6 +172,16 @@ class Staged:
             out["stage_reason"] = self.reason
         if self.stderr:
             out["stage_stderr"] = self.stderr[:200]
+        if self.staged and self.excluded:
+            # A staged scan does NOT cover these, while an in-place scan of the
+            # same target would. Saying so in the result is the difference
+            # between reduced coverage and silently reduced coverage - code
+            # vendored under one of these names is simply not examined.
+            out["not_scanned_dirs"] = sorted(self.excluded)
+            out["coverage_note"] = (
+                "staged scan: the directories in not_scanned_dirs were excluded from the "
+                "copy and were NOT scanned. Set STAGE_EXCLUDE, or stage='never' to scan "
+                "the target in place with full coverage.")
         return out
 
     def cleanup(self) -> None:
@@ -168,28 +219,99 @@ def stage(path: str, mode: str = "auto", tool: str = "",
     if executor is None:
         from core import execute_command as executor  # late import: avoids a cycle
 
-    base = base_dir or STAGE_BASE_DIR or os.path.join(tempfile.gettempdir(), "sast-stage")
+    base = base_dir or STAGE_BASE_DIR or _default_base_dir()
+    # A staging root inside the scan target would have tar copying the
+    # destination into itself, which inflates the copy and corrupts the
+    # completeness check. Scan in place instead.
+    base_real, src_real = os.path.realpath(base), os.path.realpath(src)
+    if base_real == src_real or base_real.startswith(src_real + os.sep):
+        logger.warning("staging dir %s is inside the target %s; scanning in place", base, src)
+        return Staged(src, src, False, reason="staging dir is inside the scan target")
     try:
-        os.makedirs(base, exist_ok=True)
+        # 0o700, and refuse a base somebody else controls: a staged copy is a
+        # full copy of the caller's source tree, so a pre-created or symlinked
+        # /tmp/sast-stage would hand it to another local user.
+        os.makedirs(base, mode=0o700, exist_ok=True)
+        problem = _base_dir_defect(base)
+        if problem:
+            logger.warning("staging base %s rejected (%s); scanning in place", base, problem)
+            return Staged(src, src, False, reason=f"staging dir rejected: {problem}")
         dest = tempfile.mkdtemp(prefix=os.path.basename(src.rstrip("/\\"))[:40] + "-", dir=base)
     except OSError as e:
         logger.warning("staging unavailable (%s); scanning in place: %s", base, e)
         return Staged(src, src, False, reason=f"staging dir unusable: {e}")
 
-    excludes = " ".join(f"--exclude={shlex.quote(d)}" for d in sorted(SKIP_DIRS))
+    skip = _exclude_dirs()
+    excludes = " ".join(f"--exclude={shlex.quote(d)}" for d in sorted(skip))
     cmd = (f"tar -C {shlex.quote(src)} {excludes} -cf - . | "
            f"tar -C {shlex.quote(dest)} -xf -")
     res = executor(cmd, timeout=STAGE_TIMEOUT) or {}
 
-    try:
-        empty = not os.listdir(dest)
-    except OSError:
-        empty = True
-    if empty:
-        # Staging must never be the reason a scan finds nothing.
-        logger.warning("tar staging produced nothing for %s; scanning in place", src)
+    # A PARTIAL copy is the dangerous outcome, not an empty one. If the disk
+    # fills or tar errors mid-stream, dest is non-empty and a naive check calls
+    # the copy good - so the scanner examines an incomplete tree and reports
+    # fewer findings with no error. That is the same false-clean shape as a
+    # crashed scanner, so the copy has to be proven complete before it is used.
+    problem = _copy_defect(src, dest, res, skip)
+    if problem:
+        logger.warning("staging rejected for %s (%s); scanning in place", src, problem)
         shutil.rmtree(dest, ignore_errors=True)
-        return Staged(src, src, False, reason="tar staging produced no files")
+        return Staged(src, src, False, reason=f"staging rejected: {problem}",
+                      stderr=(res.get("stderr") or ""), excluded=skip)
 
     return Staged(dest, src, True, reason=f"source on {fstype(src) or 'unknown'} filesystem",
-                  stderr=(res.get("stderr") or ""))
+                  stderr=(res.get("stderr") or ""), excluded=skip)
+
+
+def _exclude_dirs() -> frozenset:
+    """Directories left out of the copy. STAGE_EXCLUDE overrides the default."""
+    override = os.environ.get("STAGE_EXCLUDE")
+    if override is None:
+        return frozenset(SKIP_DIRS)
+    names = {n.strip() for n in override.split(",") if n.strip()}
+    # .git is non-negotiable: a copy of it would be partial and misleading, and
+    # git-history tools are never staged anyway.
+    names.add(".git")
+    return frozenset(names)
+
+
+# tar reports these on stderr while still exiting 0 in a pipeline, because a
+# shell pipeline's status is the LAST command's - the receiving tar - so a
+# failure in the sending tar is invisible without reading the text.
+_TAR_ERROR_MARKERS = (
+    "no space left", "cannot write", "write error", "error exit delayed",
+    "unexpected eof", "cannot open", "permission denied", "input/output error",
+    "disk quota exceeded", "file changed as we read it",
+)
+
+
+def _top_level(path: str, skip: frozenset) -> Optional[int]:
+    try:
+        return sum(1 for n in os.listdir(path) if n not in skip)
+    except OSError:
+        return None
+
+
+def _copy_defect(src: str, dest: str, res: Dict[str, Any], skip: frozenset) -> str:
+    """'' when the staged copy looks complete, else why it cannot be trusted."""
+    rc = res.get("return_code")
+    if rc not in (0, None):
+        return f"tar exited {rc}"
+    stderr = (res.get("stderr") or "").lower()
+    for marker in _TAR_ERROR_MARKERS:
+        if marker in stderr:
+            return f"tar reported '{marker}'"
+    if res.get("timed_out"):
+        return "tar timed out"
+
+    want = _top_level(src, skip)
+    got = _top_level(dest, skip)
+    if got is None:
+        return "staged copy is unreadable"
+    if got == 0:
+        return "staged copy is empty"
+    # One readdir each, no recursion: cheap, and gross truncation (whole
+    # subtrees missing) is what a failed copy actually looks like.
+    if want is not None and got < want:
+        return f"staged copy has {got} of {want} top-level entries"
+    return ""
