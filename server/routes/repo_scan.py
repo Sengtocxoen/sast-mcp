@@ -31,7 +31,7 @@ import threading
 import traceback
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from flask import Flask, request, jsonify
 
@@ -62,16 +62,18 @@ _URL_RE = re.compile(
 _NAME_RE = re.compile(r"[^A-Za-z0-9._-]")
 
 # Source extensions -> (semgrep config packs, extra per-language tool keys).
+# Every family carries p/security-audit: the TS/JS entries did not, so a repo
+# with no .js file was scanned with language rules only.
 _LANG_MAP = {
     ".go":    (["p/golang", "p/security-audit"], ["gosec"]),
     ".py":    (["p/python", "p/security-audit"], ["bandit"]),
     ".js":    (["p/javascript", "p/security-audit"], ["nodejsscan", "eslint"]),
-    ".jsx":   (["p/javascript"], ["nodejsscan", "eslint"]),
-    ".mjs":   (["p/javascript"], ["nodejsscan", "eslint"]),
-    ".cjs":   (["p/javascript"], ["nodejsscan", "eslint"]),
-    ".ts":    (["p/typescript", "p/javascript"], ["nodejsscan", "eslint"]),
-    ".tsx":   (["p/typescript"], ["nodejsscan", "eslint"]),
-    ".vue":   (["p/javascript"], ["nodejsscan"]),
+    ".jsx":   (["p/javascript", "p/security-audit"], ["nodejsscan", "eslint"]),
+    ".mjs":   (["p/javascript", "p/security-audit"], ["nodejsscan", "eslint"]),
+    ".cjs":   (["p/javascript", "p/security-audit"], ["nodejsscan", "eslint"]),
+    ".ts":    (["p/typescript", "p/javascript", "p/security-audit"], ["nodejsscan", "eslint"]),
+    ".tsx":   (["p/typescript", "p/security-audit"], ["nodejsscan", "eslint"]),
+    ".vue":   (["p/javascript", "p/security-audit"], ["nodejsscan"]),
     ".rb":    (["p/ruby", "p/security-audit"], ["brakeman"]),
     ".java":  (["p/java", "p/security-audit"], []),
     ".kt":    (["p/kotlin"], []),
@@ -467,16 +469,21 @@ def _eslint_env() -> Dict[str, Any]:
     return _eslint_probe
 
 
-def _eslint_entry(dest: str, out_dir: str, rep_path: str) -> Optional[Dict[str, Any]]:
-    """Build the eslint plan entry for whichever eslint major is installed."""
+def _eslint_entry(dest: str, out_dir: str,
+                  rep_path: str) -> Tuple[Optional[Dict[str, Any]], str]:
+    """(plan entry, reason it was declined) for the installed eslint major.
+
+    Returning the reason is the point: the binary is installed and the language
+    matches, so a bare None left eslint out of both tools_planned and
+    tools_missing, and the only trace was a log line.
+    """
     env = _eslint_env()
     major, plugin_dir = env["major"], env["plugin_dir"]
     if not major:
-        return None
+        return None, "eslint version not detected (`eslint --version` gave no major)"
     if not plugin_dir:
         # Without eslint-plugin-security, eslint contributes only style noise.
-        logger.info("eslint: eslint-plugin-security not installed; skipping")
-        return None
+        return None, "eslint-plugin-security not installed (npm i -g eslint-plugin-security)"
     q = shlex.quote
     if major >= 9:
         # Flat config. The plugin is imported by absolute path because the config
@@ -504,11 +511,12 @@ def _eslint_entry(dest: str, out_dir: str, rep_path: str) -> Optional[Dict[str, 
                f"--ext .js,.jsx,.mjs,.cjs,.ts,.tsx -f json -o {q(rep_path)} "
                f"{q(dest)} || true")
     return {"tool": "eslint", "command": cmd, "report": rep_path,
-            "timeout": _FAST_TIMEOUT, "weight": 1}
+            "timeout": _FAST_TIMEOUT, "weight": 1}, ""
 
 
 def _build_plan(ctx: Dict[str, Any], dest: str, out_dir: str,
-                want: Dict[str, bool]) -> List[Dict[str, Any]]:
+                want: Dict[str, bool],
+                skips: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:
     """Assemble the command list: every installed tool that applies to this repo.
 
     Gating is three-way — the language/marker must be present, the binary must be
@@ -518,6 +526,7 @@ def _build_plan(ctx: Dict[str, Any], dest: str, out_dir: str,
     langs: Counter = ctx["langs"]
     markers: Dict[str, List[str]] = ctx["markers"]
     plan: List[Dict[str, Any]] = []
+    gaps: Dict[str, str] = skips if skips is not None else {}
     q = shlex.quote
     have = tool_registry.have
     binary = tool_registry.binary_for
@@ -569,15 +578,22 @@ def _build_plan(ctx: Dict[str, Any], dest: str, out_dir: str,
             njs = binary("nodejsscan")
             add("nodejsscan", f"{njs} --json -o {q(rep('nodejsscan'))} {q(dest)}",
                 rep("nodejsscan"), weight=2)
-        if have("eslint") and want.get("eslint", True):
-            entry = _eslint_entry(dest, out_dir, rep("eslint"))
+        if not want.get("eslint", True):
+            gaps["eslint"] = "disabled by caller (want.eslint=false)"
+        elif have("eslint"):
+            entry, why = _eslint_entry(dest, out_dir, rep("eslint"))
             if entry:
                 plan.append(entry)
+            else:
+                gaps["eslint"] = why
 
-    if ".go" in langs and have("gosec") and want.get("gosec", True):
-        # Contained by the per-scan memory cap; opt out with {"gosec": false}.
-        add("gosec", f"cd {q(dest)} && gosec -fmt=json -out={q(rep('gosec'))} -no-fail ./...",
-            rep("gosec"), weight=2)
+    if ".go" in langs and have("gosec"):
+        if not want.get("gosec", True):
+            gaps["gosec"] = "disabled by caller (want.gosec=false)"
+        else:
+            # Contained by the per-scan memory cap; opt out with {"gosec": false}.
+            add("gosec", f"cd {q(dest)} && gosec -fmt=json -out={q(rep('gosec'))} -no-fail ./...",
+                rep("gosec"), weight=2)
 
     if ".rb" in langs and have("brakeman"):
         add("brakeman",
@@ -676,7 +692,8 @@ def _build_plan(ctx: Dict[str, Any], dest: str, out_dir: str,
     return plan
 
 
-def _coverage(ctx: Dict[str, Any], plan: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _coverage(ctx: Dict[str, Any], plan: List[Dict[str, Any]],
+              skips: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """What ran, what was skipped, and why — so gaps are visible, not silent."""
     avail = tool_registry.availability()
     planned = {p["tool"] for p in plan}
@@ -685,6 +702,9 @@ def _coverage(ctx: Dict[str, Any], plan: List[Dict[str, Any]]) -> Dict[str, Any]
         "tools_planned": sorted(planned),
         "tools_installed": sorted(k for k, v in avail.items() if v),
         "tools_missing": sorted(k for k, v in avail.items() if not v),
+        # Installed and applicable, but declined by a precondition. Without this
+        # a skipped tool appears in neither planned nor missing.
+        "tools_skipped": dict(sorted((skips or {}).items())),
         "engine": resolve_grep_engine(),
         "markers_found": sorted(ctx["markers"].keys()),
     }
@@ -750,7 +770,8 @@ def register(app: Flask) -> None:
             if not langs and not (want["secrets"] or want["deps"]):
                 return jsonify({"error": "no supported source files detected", "repo": cloned}), 200
 
-            plan = _build_plan(ctx, dest, out_dir, want)
+            skips: Dict[str, str] = {}
+            plan = _build_plan(ctx, dest, out_dir, want, skips)
             results = _run_plan_parallel(plan)
 
             # Cross-check: normalize every report into one schema and cluster the
@@ -783,7 +804,7 @@ def register(app: Flask) -> None:
                 "tools_run": [r["tool"] for r in results],
                 "total_findings": total,
                 "results": results,
-                "coverage": _coverage(ctx, plan),
+                "coverage": _coverage(ctx, plan, skips),
                 "cross_check": summary,
                 "top_findings": top,
                 "note": ("raw per-tool counts are in results[]; cross_check collapses them "
