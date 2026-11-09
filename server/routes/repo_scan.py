@@ -100,9 +100,11 @@ _CLONE_TIMEOUT = 300
 # ~100x slower due to per-file fuse round-trips; only the small JSON reports
 # get copied back to the mount for the user.
 REPO_SCAN_LOCAL_DIR = os.environ.get("REPO_SCAN_LOCAL_DIR", "/var/tmp/sast-repos")
-_SEMGREP_TIMEOUT = 1800
+_SEMGREP_TIMEOUT = 5400
 _TOOL_TIMEOUT = 900
 _FAST_TIMEOUT = 300
+# Whole-monorepo scanners (gosec on 900+ Go files) exceed _TOOL_TIMEOUT.
+_SLOW_TIMEOUT = 2700
 
 # Filesystem types where per-file I/O is slow enough to justify staging a copy.
 # Shared with the per-tool endpoints via server/staging.py, so a filesystem
@@ -448,7 +450,32 @@ _ESLINT_LEGACY_CONFIG = {
     "parserOptions": {"ecmaVersion": 2022, "sourceType": "module"},
     "env": {"node": True, "browser": True, "es2022": True},
 }
+# espree in eslint <8 rejects ecmaVersion/env 2022 outright ("Environment key
+# \"es2022\" is unknown"), which fails the whole run before a single file is read.
+_ESLINT_PRE8_CONFIG = {
+    "plugins": ["security"],
+    "extends": ["plugin:security/recommended-legacy"],
+    "parserOptions": {"ecmaVersion": 2020, "sourceType": "module"},
+    "env": {"node": True, "browser": True, "es6": True},
+}
+# .ts/.tsx need @typescript-eslint/parser, which ships with no eslint <8 here;
+# linting them with espree yields parse errors, not findings.
+_ESLINT_PRE8_EXTS = ".js,.jsx,.mjs,.cjs"
 _eslint_probe: Dict[str, Any] = {}
+
+
+def _node_entry(pkg_dir: str) -> str:
+    """Absolute entry file of a CommonJS package, or "" if none is apparent."""
+    main = ""
+    try:
+        with open(os.path.join(pkg_dir, "package.json")) as fh:
+            main = (json.load(fh) or {}).get("main") or ""
+    except (OSError, ValueError):
+        main = ""
+    for rel in (main, "dist/index.js", "index.js"):
+        if rel and os.path.isfile(os.path.join(pkg_dir, rel)):
+            return os.path.join(pkg_dir, rel)
+    return ""
 
 
 def _eslint_env() -> Dict[str, Any]:
@@ -461,11 +488,35 @@ def _eslint_env() -> Dict[str, Any]:
             major = int(m.group(1))
         plugin_dir = ""
         root = (execute_command("npm root -g", timeout=30).get("stdout") or "").strip()
-        for cand in (root, "/usr/lib/node_modules", "/usr/local/lib/node_modules"):
+        # An `npm i -g --prefix <dir>` eslint is not under `npm root -g`, so also
+        # derive the node_modules root of whichever eslint is actually on PATH.
+        real = (execute_command('readlink -f "$(command -v eslint)"', timeout=30)
+                .get("stdout") or "").strip()
+        own_root = ""
+        parts = real.split(os.sep) if real else []
+        if "node_modules" in parts:
+            own_root = os.sep.join(parts[:parts.index("node_modules") + 1])
+        roots = (root, own_root, "/usr/lib/node_modules", "/usr/local/lib/node_modules")
+        for cand in roots:
             if cand and os.path.isdir(os.path.join(cand, "eslint-plugin-security")):
                 plugin_dir = cand
                 break
-        _eslint_probe.update({"major": major, "plugin_dir": plugin_dir})
+        # Without @typescript-eslint/parser, espree raises a parse error on every
+        # .ts/.tsx file rather than linting it.
+        ts_parser = ""
+        for nm in roots:
+            if not nm:
+                continue
+            for cand in (os.path.join(nm, "@typescript-eslint", "parser"),
+                         os.path.join(nm, "typescript-eslint", "node_modules",
+                                      "@typescript-eslint", "parser")):
+                if os.path.isdir(cand):
+                    ts_parser = _node_entry(cand)
+                    break
+            if ts_parser:
+                break
+        _eslint_probe.update({"major": major, "plugin_dir": plugin_dir,
+                              "ts_parser": ts_parser})
     return _eslint_probe
 
 
@@ -490,28 +541,54 @@ def _eslint_entry(dest: str, out_dir: str,
         # lives in the report dir, not next to a node_modules that resolves it.
         cfg_path = os.path.join(out_dir, "eslint.config.mjs")
         plugin_path = os.path.join(plugin_dir, "eslint-plugin-security", "index.js")
+        ts_parser = env.get("ts_parser") or ""
+        ts_globs = [g for g in _ESLINT_GLOBS if g.endswith((".ts", ".tsx"))]
+        js_globs = [g for g in _ESLINT_GLOBS if g not in ts_globs]
         with open(cfg_path, "w") as fh:
+            # The plugin and the parser are both CommonJS, so createRequire them
+            # by absolute path: this config lives in the report dir, not next to
+            # a node_modules that would resolve either name.
             fh.write(
-                f"import security from {json.dumps(plugin_path)};\n"
-                f"export default [{{\n"
-                f"  files: {json.dumps(_ESLINT_GLOBS)},\n"
-                f"  plugins: {{ security }},\n"
-                f"  rules: security.configs.recommended.rules,\n"
-                f"  languageOptions: {{ ecmaVersion: 2022, sourceType: \"module\" }}\n"
-                f"}}];\n"
+                'import { createRequire } from "module";\n'
+                'const req = createRequire(import.meta.url);\n'
+                f"const security = req({json.dumps(plugin_path)});\n"
             )
+            if ts_parser:
+                fh.write(f"const tsParser = req({json.dumps(ts_parser)});\n")
+            fh.write(
+                "const rules = security.configs.recommended.rules;\n"
+                "export default [{\n"
+                f"  files: {json.dumps(js_globs)},\n"
+                "  plugins: { security },\n"
+                "  rules,\n"
+                '  languageOptions: { ecmaVersion: 2022, sourceType: "module" }\n'
+                "}"
+            )
+            if ts_parser:
+                fh.write(
+                    ", {\n"
+                    f"  files: {json.dumps(ts_globs)},\n"
+                    "  plugins: { security },\n"
+                    "  rules,\n"
+                    "  languageOptions: { parser: tsParser, ecmaVersion: 2022,\n"
+                    '                     sourceType: "module" }\n'
+                    "}"
+                )
+            fh.write("];\n")
         cmd = (f"cd {q(dest)} && NODE_PATH={q(plugin_dir)} eslint --no-config-lookup "
                f"-c {q(cfg_path)} -f json -o {q(rep_path)} . || true")
     else:
         cfg_path = os.path.join(out_dir, "eslintrc.security.json")
+        legacy = _ESLINT_LEGACY_CONFIG if env["major"] >= 8 else _ESLINT_PRE8_CONFIG
+        exts = ".js,.jsx,.mjs,.cjs,.ts,.tsx" if env["major"] >= 8 else _ESLINT_PRE8_EXTS
         with open(cfg_path, "w") as fh:
-            json.dump(_ESLINT_LEGACY_CONFIG, fh)
-        cmd = (f"ESLINT_USE_FLAT_CONFIG=false eslint --no-eslintrc -c {q(cfg_path)} "
-               f"--resolve-plugins-relative-to {q(plugin_dir)} "
-               f"--ext .js,.jsx,.mjs,.cjs,.ts,.tsx -f json -o {q(rep_path)} "
-               f"{q(dest)} || true")
+            json.dump(legacy, fh)
+        cmd = (f"cd {q(dest)} && ESLINT_USE_FLAT_CONFIG=false eslint --no-eslintrc "
+               f"-c {q(cfg_path)} --resolve-plugins-relative-to {q(plugin_dir)} "
+               f"--ext {exts} -f json -o {q(rep_path)} "
+               f". || true")
     return {"tool": "eslint", "command": cmd, "report": rep_path,
-            "timeout": _FAST_TIMEOUT, "weight": 1}, ""
+            "timeout": _TOOL_TIMEOUT, "weight": 1}, ""
 
 
 def _build_plan(ctx: Dict[str, Any], dest: str, out_dir: str,
@@ -593,7 +670,7 @@ def _build_plan(ctx: Dict[str, Any], dest: str, out_dir: str,
         else:
             # Contained by the per-scan memory cap; opt out with {"gosec": false}.
             add("gosec", f"cd {q(dest)} && gosec -fmt=json -out={q(rep('gosec'))} -no-fail ./...",
-                rep("gosec"), weight=2)
+                rep("gosec"), _SLOW_TIMEOUT, weight=2)
 
     if ".rb" in langs and have("brakeman"):
         add("brakeman",
