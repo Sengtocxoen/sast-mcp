@@ -9,6 +9,7 @@ import logging
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -605,11 +606,7 @@ class CommandExecutor:
                 self.return_code = self.process.wait(timeout=self.timeout)
             except subprocess.TimeoutExpired:
                 self.timed_out = True
-                self.process.terminate()
-                try:
-                    self.process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    self.process.kill()
+                self._kill_group()
                 self.return_code = -1
             t1.join(timeout=5)
             t2.join(timeout=5)
@@ -630,6 +627,28 @@ class CommandExecutor:
                 "stdout": self.stdout_data, "stderr": str(e), "return_code": -1,
                 "success": False, "timed_out": False, "partial_results": bool(self.stdout_data or self.stderr_data), "error": str(e),
             }
+
+    def _kill_group(self) -> None:
+        """Stop the shell AND its children. terminate() alone hit only the shell,
+        so a timed-out tar or grep kept running as an orphan."""
+        try:
+            pgid = os.getpgid(self.process.pid)
+            os.killpg(pgid, signal.SIGTERM)
+            try:
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            # The shell can exit on SIGTERM while a child ignores it; kill the rest.
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        except (AttributeError, OSError):
+            # No process groups (Windows): fall back to the shell alone.
+            self.process.kill()
+        try:
+            self.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
 
 
 def execute_command(command: str, cwd: Optional[str] = None, timeout: int = COMMAND_TIMEOUT) -> Dict[str, Any]:

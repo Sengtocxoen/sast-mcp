@@ -294,6 +294,9 @@ def _top_level(path: str, skip: frozenset) -> Optional[int]:
 
 def _copy_defect(src: str, dest: str, res: Dict[str, Any], skip: frozenset) -> str:
     """'' when the staged copy looks complete, else why it cannot be trusted."""
+    # Checked first: a killed tar also exits -1, which hid the real cause.
+    if res.get("timed_out"):
+        return "tar timed out"
     rc = res.get("return_code")
     if rc not in (0, None):
         return f"tar exited {rc}"
@@ -301,8 +304,6 @@ def _copy_defect(src: str, dest: str, res: Dict[str, Any], skip: frozenset) -> s
     for marker in _TAR_ERROR_MARKERS:
         if marker in stderr:
             return f"tar reported '{marker}'"
-    if res.get("timed_out"):
-        return "tar timed out"
 
     want = _top_level(src, skip)
     got = _top_level(dest, skip)
