@@ -28,6 +28,7 @@ import shlex
 import shutil
 import subprocess
 import threading
+import time
 import traceback
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -43,6 +44,7 @@ from config import (
     MOUNT_POINT,
     REPO_SCAN_CPU_BUDGET,
     REPO_SCAN_TOOL_CONCURRENCY,
+    SCAN_MEMORY_MAX_MB,
 )
 from core import (
     execute_command,
@@ -100,9 +102,14 @@ _CLONE_TIMEOUT = 300
 # ~100x slower due to per-file fuse round-trips; only the small JSON reports
 # get copied back to the mount for the user.
 REPO_SCAN_LOCAL_DIR = os.environ.get("REPO_SCAN_LOCAL_DIR", "/var/tmp/sast-repos")
-_SEMGREP_TIMEOUT = 1800
+_SEMGREP_TIMEOUT = 5400
 _TOOL_TIMEOUT = 900
 _FAST_TIMEOUT = 300
+# Whole-monorepo scanners (gosec on 900+ Go files) exceed _TOOL_TIMEOUT.
+_SLOW_TIMEOUT = 2700
+# gosec type-checks a whole module in memory. A module that hits the memory cap
+# is retried folder by folder, down to this many levels.
+_GOSEC_SPLIT_DEPTH = 2
 
 # Filesystem types where per-file I/O is slow enough to justify staging a copy.
 # Shared with the per-tool endpoints via server/staging.py, so a filesystem
@@ -184,7 +191,7 @@ def _stage_local(path: str, base_dir: str, mode: str = "auto") -> Dict[str, Any]
     excludes = " ".join(f"--exclude={shlex.quote(d)}" for d in sorted(_SKIP_DIRS))
     cmd = (f"tar -C {shlex.quote(src)} {excludes} -cf - . | "
            f"tar -C {shlex.quote(dest)} -xf -")
-    res = execute_command(cmd, timeout=_CLONE_TIMEOUT * 2)
+    res = execute_command(cmd, timeout=staging.STAGE_TIMEOUT)
     if not os.listdir(dest):
         # tar unavailable or refused the tree — fall back to the original copy so
         # staging can never be the reason a scan produces nothing.
@@ -192,9 +199,18 @@ def _stage_local(path: str, base_dir: str, mode: str = "auto") -> Dict[str, Any]
         shutil.rmtree(dest, ignore_errors=True)
         shutil.copytree(src, dest, ignore=shutil.ignore_patterns(*_SKIP_DIRS),
                         symlinks=False, ignore_dangling_symlinks=True)
-    return {"dest": dest, "name": name, "reused": False, "staged": True,
-            "source_path": src, "source_fstype": _fstype(src),
-            "stage_stderr": (res.get("stderr") or "")[:200] or None}
+        res = {"return_code": 0}
+    out = {"dest": dest, "name": name, "reused": False, "staged": True,
+           "source_path": src, "source_fstype": _fstype(src),
+           "stage_stderr": (res.get("stderr") or "")[:200] or None}
+    # A partial copy (tar timed out or failed mid-stream) is still scanned, because
+    # scanning in place off the share is ~100x slower. But it must be visible:
+    # a large repo was once scanned with ~1,000 files missing and no error anywhere.
+    defect = staging._copy_defect(src, dest, res, frozenset(_SKIP_DIRS))
+    if defect:
+        logger.warning(f"staging incomplete for {src}: {defect}")
+        out["stage_defect"] = defect
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -287,7 +303,10 @@ def _parse_findings(path: str, tool: str) -> Dict[str, Any]:
     if tool == "tfsec":
         return {"findings": len(d.get("results") or [])}
     if tool == "graudit":
-        return {"findings": len(d.get("matches") or [])}
+        out = {"findings": d.get("total", len(d.get("matches") or []))}
+        if d.get("truncated"):
+            out["truncated"] = True
+        return out
     # Anything the correlator can normalize gets a count from there.
     n = len(correlate.normalize(tool, path, ""))
     return {"findings": n if n else None}
@@ -323,7 +342,10 @@ def _graudit_to_json(path: str) -> None:
     except Exception:
         pass
     with open(path, "w") as fh:
-        json.dump({"matches": matches[:2000]}, fh)
+        # Keep the file small, but report the real count: the stored list is cut
+        # at 2000, and large repos showed exactly 2000.
+        json.dump({"matches": matches[:2000], "total": len(matches),
+                   "truncated": len(matches) > 2000}, fh)
 
 
 _POST = {"trufflehog": _jsonl_to_json, "graudit": _graudit_to_json}
@@ -342,7 +364,130 @@ def _run_tool(tool: str, command: str, report: str, timeout: int) -> Dict[str, A
     if os.path.exists(report) and os.path.getsize(report) > 0:
         out.update(_parse_findings(report, tool))
     else:
-        out["error"] = (res.get("stderr") or res.get("stdout") or "no report written")[:300]
+        out["error"] = "no report written: " + _error_text(res)
+    return out
+
+
+def _error_text(res: Dict[str, Any]) -> str:
+    """The line that explains a failure. The first 300 chars of tfsec's stderr
+    were its "joining the Trivy family" banner, which hid the real error."""
+    text = (res.get("stderr") or res.get("stdout") or "").strip()
+    if not text:
+        return "no output"
+    for line in reversed(text.splitlines()):
+        if "error" in line.lower():
+            return line.strip()[:300]
+    return text[-300:]
+
+
+def _go_subdirs(path: str) -> List[str]:
+    """Child folders holding Go code that belongs to this module (nested modules excluded)."""
+    subs = []
+    try:
+        names = sorted(os.listdir(path))
+    except OSError:
+        return subs
+    for name in names:
+        full = os.path.join(path, name)
+        if (name in _SKIP_DIRS or name.startswith(".") or not os.path.isdir(full)
+                or os.path.exists(os.path.join(full, "go.mod"))):
+            continue
+        for dirpath, dirnames, filenames in os.walk(full):
+            dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS and not d.startswith(".")
+                           and not os.path.exists(os.path.join(dirpath, d, "go.mod"))]
+            if any(f.endswith(".go") for f in filenames):
+                subs.append(name)
+                break
+    return subs
+
+
+def _go_modules(root: str) -> List[str]:
+    """Every go.mod folder, relative to root, as a posix path ("." for the root)."""
+    mods = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIRS and not d.startswith("."))
+        if "go.mod" in filenames:
+            mods.append(os.path.relpath(dirpath, root).replace(os.sep, "/"))
+    return mods or ["."]
+
+
+def _run_gosec(dest: str, report: str, timeout: int) -> Dict[str, Any]:
+    """gosec one Go module at a time, splitting a module that hits the memory cap.
+
+    One `gosec ./...` at the repo root type-checks every module together. On
+    a large Go monorepo that was OOM-killed on every run, so the repo had no
+    gosec result at all. GOFLAGS=-p=1 and GOMEMLIMIT keep each run smaller.
+    Anything that still fails is listed in `incomplete`, never dropped.
+    """
+    q = shlex.quote
+    work = os.path.join(os.path.dirname(report), "gosec.d")
+    os.makedirs(work, exist_ok=True)
+    deadline = time.monotonic() + timeout
+    mem = max(512, int(SCAN_MEMORY_MAX_MB * 0.6))
+    issues: List[Any] = []
+    scanned: List[str] = []
+    failed: Dict[str, str] = {}
+    state = {"out_of_time": False}
+
+    def one(mod: str, pattern: str) -> bool:
+        label = f"{mod}:{pattern}"
+        left = int(deadline - time.monotonic())
+        if left < 30:
+            state["out_of_time"] = True
+            failed[label] = "out of time"
+            return False
+        tmp = os.path.join(work, _NAME_RE.sub("_", label) + ".json")
+        cmd = (f"cd {q(os.path.join(dest, mod))} && GOFLAGS=-p=1 GOMEMLIMIT={mem}MiB "
+               f"gosec -fmt=json -out={q(tmp)} -no-fail {q(pattern)}")
+        res = execute_command(cmd, timeout=left)
+        try:
+            with open(tmp) as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            if res.get("timed_out"):
+                failed[label] = "timed out"
+            else:
+                failed[label] = f"rc={res.get('return_code')}: {_error_text(res)}"
+            return False
+        issues.extend(data.get("Issues") or [])
+        scanned.append(label)
+        return True
+
+    def walk(mod: str, rel: str, depth: int) -> None:
+        pattern = f"./{rel}/..." if rel else "./..."
+        if one(mod, pattern) or state["out_of_time"] or depth >= _GOSEC_SPLIT_DEPTH:
+            return
+        base = os.path.join(dest, mod, *rel.split("/")) if rel else os.path.join(dest, mod)
+        subs = _go_subdirs(base)
+        if not subs:
+            return
+        # The parts replace the failed whole; any part that fails is recorded itself.
+        del failed[f"{mod}:{pattern}"]
+        try:
+            root_go = any(f.endswith(".go") for f in os.listdir(base))
+        except OSError:
+            root_go = False
+        if root_go:
+            one(mod, f"./{rel}" if rel else ".")
+        for s in subs:
+            walk(mod, f"{rel}/{s}" if rel else s, depth + 1)
+
+    for mod in _go_modules(dest):
+        walk(mod, "", 0)
+
+    out: Dict[str, Any] = {"tool": "gosec", "report": report, "duration": None,
+                           "timed_out": state["out_of_time"],
+                           "return_code": 0 if scanned else 1}
+    if failed:
+        out["incomplete"] = dict(sorted(failed.items()))
+    if not scanned:
+        # No report: an empty one would read as a clean scan.
+        out["error"] = "gosec finished no module"
+        return out
+    with open(report, "w") as fh:
+        json.dump({"Issues": issues, "Stats": {"found": len(issues)},
+                   "Modules": {"scanned": scanned, "failed": failed}}, fh)
+    out["findings"] = len(issues)
     return out
 
 
@@ -410,6 +555,8 @@ def _run_plan_parallel(plan: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         w = int(entry.get("weight", 1))
         gate.acquire(w)
         try:
+            if entry.get("runner"):
+                return entry["runner"]()
             return _run_tool(entry["tool"], entry["command"], entry["report"], entry["timeout"])
         finally:
             gate.release(w)
@@ -448,7 +595,32 @@ _ESLINT_LEGACY_CONFIG = {
     "parserOptions": {"ecmaVersion": 2022, "sourceType": "module"},
     "env": {"node": True, "browser": True, "es2022": True},
 }
+# espree in eslint <8 rejects ecmaVersion/env 2022 outright ("Environment key
+# \"es2022\" is unknown"), which fails the whole run before a single file is read.
+_ESLINT_PRE8_CONFIG = {
+    "plugins": ["security"],
+    "extends": ["plugin:security/recommended-legacy"],
+    "parserOptions": {"ecmaVersion": 2020, "sourceType": "module"},
+    "env": {"node": True, "browser": True, "es6": True},
+}
+# .ts/.tsx need @typescript-eslint/parser, which ships with no eslint <8 here;
+# linting them with espree yields parse errors, not findings.
+_ESLINT_PRE8_EXTS = ".js,.jsx,.mjs,.cjs"
 _eslint_probe: Dict[str, Any] = {}
+
+
+def _node_entry(pkg_dir: str) -> str:
+    """Absolute entry file of a CommonJS package, or "" if none is apparent."""
+    main = ""
+    try:
+        with open(os.path.join(pkg_dir, "package.json")) as fh:
+            main = (json.load(fh) or {}).get("main") or ""
+    except (OSError, ValueError):
+        main = ""
+    for rel in (main, "dist/index.js", "index.js"):
+        if rel and os.path.isfile(os.path.join(pkg_dir, rel)):
+            return os.path.join(pkg_dir, rel)
+    return ""
 
 
 def _eslint_env() -> Dict[str, Any]:
@@ -461,11 +633,35 @@ def _eslint_env() -> Dict[str, Any]:
             major = int(m.group(1))
         plugin_dir = ""
         root = (execute_command("npm root -g", timeout=30).get("stdout") or "").strip()
-        for cand in (root, "/usr/lib/node_modules", "/usr/local/lib/node_modules"):
+        # An `npm i -g --prefix <dir>` eslint is not under `npm root -g`, so also
+        # derive the node_modules root of whichever eslint is actually on PATH.
+        real = (execute_command('readlink -f "$(command -v eslint)"', timeout=30)
+                .get("stdout") or "").strip()
+        own_root = ""
+        parts = real.split(os.sep) if real else []
+        if "node_modules" in parts:
+            own_root = os.sep.join(parts[:parts.index("node_modules") + 1])
+        roots = (root, own_root, "/usr/lib/node_modules", "/usr/local/lib/node_modules")
+        for cand in roots:
             if cand and os.path.isdir(os.path.join(cand, "eslint-plugin-security")):
                 plugin_dir = cand
                 break
-        _eslint_probe.update({"major": major, "plugin_dir": plugin_dir})
+        # Without @typescript-eslint/parser, espree raises a parse error on every
+        # .ts/.tsx file rather than linting it.
+        ts_parser = ""
+        for nm in roots:
+            if not nm:
+                continue
+            for cand in (os.path.join(nm, "@typescript-eslint", "parser"),
+                         os.path.join(nm, "typescript-eslint", "node_modules",
+                                      "@typescript-eslint", "parser")):
+                if os.path.isdir(cand):
+                    ts_parser = _node_entry(cand)
+                    break
+            if ts_parser:
+                break
+        _eslint_probe.update({"major": major, "plugin_dir": plugin_dir,
+                              "ts_parser": ts_parser})
     return _eslint_probe
 
 
@@ -490,28 +686,54 @@ def _eslint_entry(dest: str, out_dir: str,
         # lives in the report dir, not next to a node_modules that resolves it.
         cfg_path = os.path.join(out_dir, "eslint.config.mjs")
         plugin_path = os.path.join(plugin_dir, "eslint-plugin-security", "index.js")
+        ts_parser = env.get("ts_parser") or ""
+        ts_globs = [g for g in _ESLINT_GLOBS if g.endswith((".ts", ".tsx"))]
+        js_globs = [g for g in _ESLINT_GLOBS if g not in ts_globs]
         with open(cfg_path, "w") as fh:
+            # The plugin and the parser are both CommonJS, so createRequire them
+            # by absolute path: this config lives in the report dir, not next to
+            # a node_modules that would resolve either name.
             fh.write(
-                f"import security from {json.dumps(plugin_path)};\n"
-                f"export default [{{\n"
-                f"  files: {json.dumps(_ESLINT_GLOBS)},\n"
-                f"  plugins: {{ security }},\n"
-                f"  rules: security.configs.recommended.rules,\n"
-                f"  languageOptions: {{ ecmaVersion: 2022, sourceType: \"module\" }}\n"
-                f"}}];\n"
+                'import { createRequire } from "module";\n'
+                'const req = createRequire(import.meta.url);\n'
+                f"const security = req({json.dumps(plugin_path)});\n"
             )
+            if ts_parser:
+                fh.write(f"const tsParser = req({json.dumps(ts_parser)});\n")
+            fh.write(
+                "const rules = security.configs.recommended.rules;\n"
+                "export default [{\n"
+                f"  files: {json.dumps(js_globs)},\n"
+                "  plugins: { security },\n"
+                "  rules,\n"
+                '  languageOptions: { ecmaVersion: 2022, sourceType: "module" }\n'
+                "}"
+            )
+            if ts_parser:
+                fh.write(
+                    ", {\n"
+                    f"  files: {json.dumps(ts_globs)},\n"
+                    "  plugins: { security },\n"
+                    "  rules,\n"
+                    "  languageOptions: { parser: tsParser, ecmaVersion: 2022,\n"
+                    '                     sourceType: "module" }\n'
+                    "}"
+                )
+            fh.write("];\n")
         cmd = (f"cd {q(dest)} && NODE_PATH={q(plugin_dir)} eslint --no-config-lookup "
                f"-c {q(cfg_path)} -f json -o {q(rep_path)} . || true")
     else:
         cfg_path = os.path.join(out_dir, "eslintrc.security.json")
+        legacy = _ESLINT_LEGACY_CONFIG if env["major"] >= 8 else _ESLINT_PRE8_CONFIG
+        exts = ".js,.jsx,.mjs,.cjs,.ts,.tsx" if env["major"] >= 8 else _ESLINT_PRE8_EXTS
         with open(cfg_path, "w") as fh:
-            json.dump(_ESLINT_LEGACY_CONFIG, fh)
-        cmd = (f"ESLINT_USE_FLAT_CONFIG=false eslint --no-eslintrc -c {q(cfg_path)} "
-               f"--resolve-plugins-relative-to {q(plugin_dir)} "
-               f"--ext .js,.jsx,.mjs,.cjs,.ts,.tsx -f json -o {q(rep_path)} "
-               f"{q(dest)} || true")
+            json.dump(legacy, fh)
+        cmd = (f"cd {q(dest)} && ESLINT_USE_FLAT_CONFIG=false eslint --no-eslintrc "
+               f"-c {q(cfg_path)} --resolve-plugins-relative-to {q(plugin_dir)} "
+               f"--ext {exts} -f json -o {q(rep_path)} "
+               f". || true")
     return {"tool": "eslint", "command": cmd, "report": rep_path,
-            "timeout": _FAST_TIMEOUT, "weight": 1}, ""
+            "timeout": _TOOL_TIMEOUT, "weight": 1}, ""
 
 
 def _build_plan(ctx: Dict[str, Any], dest: str, out_dir: str,
@@ -591,9 +813,11 @@ def _build_plan(ctx: Dict[str, Any], dest: str, out_dir: str,
         if not want.get("gosec", True):
             gaps["gosec"] = "disabled by caller (want.gosec=false)"
         else:
-            # Contained by the per-scan memory cap; opt out with {"gosec": false}.
-            add("gosec", f"cd {q(dest)} && gosec -fmt=json -out={q(rep('gosec'))} -no-fail ./...",
-                rep("gosec"), weight=2)
+            # One module at a time, each under the per-scan memory cap; opt out
+            # with {"gosec": false}. `command` is only a label here.
+            gosec_rep = rep("gosec")
+            add("gosec", f"gosec per Go module in {q(dest)}", gosec_rep, _SLOW_TIMEOUT, weight=2)
+            plan[-1]["runner"] = lambda: _run_gosec(dest, gosec_rep, _SLOW_TIMEOUT)
 
     if ".rb" in langs and have("brakeman"):
         add("brakeman",
@@ -684,7 +908,10 @@ def _build_plan(ctx: Dict[str, Any], dest: str, out_dir: str,
                 rep("checkov"), _TOOL_TIMEOUT, weight=2)
         if ".tf" in langs and have("tfsec"):
             tf = binary("tfsec")
-            cmd = (f"tfsec {q(dest)} --format json --out {q(rep('tfsec'))} --soft-fail"
+            # --ignore-hcl-errors: tfsec 1.x cannot parse newer blocks such as
+            # `import`, and without it one such file fails the whole scan.
+            cmd = (f"tfsec {q(dest)} --format json --out {q(rep('tfsec'))} --soft-fail "
+                   f"--ignore-hcl-errors"
                    if tf == "tfsec" else
                    f"trivy config --format json --output {q(rep('tfsec'))} --quiet {q(dest)}")
             add("tfsec", f"{cmd} || true", rep("tfsec"), _FAST_TIMEOUT)
@@ -790,6 +1017,9 @@ def register(app: Flask) -> None:
                 except Exception as e:
                     logger.warning(f"repo-scan: could not write cross_check.json: {e}")
 
+            coverage = _coverage(ctx, plan, skips)
+            if cloned.get("stage_defect"):
+                coverage["stage_defect"] = cloned["stage_defect"]
             total = sum(r.get("findings") or 0 for r in results)
             top_n = max(1, min(int(params.get("top_n", 25) or 25), 200))
             top = (xcheck.get("findings") or [])[:top_n] if isinstance(xcheck, dict) else []
@@ -804,7 +1034,7 @@ def register(app: Flask) -> None:
                 "tools_run": [r["tool"] for r in results],
                 "total_findings": total,
                 "results": results,
-                "coverage": _coverage(ctx, plan, skips),
+                "coverage": coverage,
                 "cross_check": summary,
                 "top_findings": top,
                 "note": ("raw per-tool counts are in results[]; cross_check collapses them "

@@ -2,7 +2,6 @@
 import json
 import logging
 import traceback
-from typing import Any, Dict
 
 from flask import Flask, request, jsonify
 
@@ -44,7 +43,7 @@ def register(app: Flask) -> None:
             additional_args = params.get("additional_args", "")
 
             valid_outputs = {"cli", "csv", "cyclonedx", "cyclonedx_json", "json", "junitxml",
-                            "github_failed_only", "gitlab_sast", "sarif", "spdx"}
+                             "github_failed_only", "gitlab_sast", "sarif", "spdx"}
             if output_format not in valid_outputs:
                 output_format = "json"
 

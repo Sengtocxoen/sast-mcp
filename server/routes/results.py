@@ -22,7 +22,6 @@ import threading
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from flask import Flask, request, jsonify
@@ -302,11 +301,11 @@ def _build_project_result(proj: Dict[str, str]) -> Dict[str, Any]:
     bn_findings = _read_bandit(project_dir)
     all_findings = sg_findings + bn_findings
 
-    sg_err  = sum(1 for f in sg_findings if f["severity"] == "ERROR")
+    sg_err = sum(1 for f in sg_findings if f["severity"] == "ERROR")
     sg_warn = sum(1 for f in sg_findings if f["severity"] == "WARNING")
     bn_high = sum(1 for f in bn_findings if f["severityRaw"] == "HIGH")
-    bn_med  = sum(1 for f in bn_findings if f["severityRaw"] == "MEDIUM")
-    noise   = sum(1 for f in all_findings if f["isNoise"])
+    bn_med = sum(1 for f in bn_findings if f["severityRaw"] == "MEDIUM")
+    noise = sum(1 for f in all_findings if f["isNoise"])
 
     return {
         "name": name, "group": group, "findings": all_findings,
@@ -366,7 +365,7 @@ def register(app: Flask) -> None:
             for proj in KNOWN_PROJECTS:
                 project_dir = os.path.join(SAST_RESULTS_DIR, proj["name"])
                 has_semgrep = os.path.isfile(os.path.join(project_dir, "semgrep.json"))
-                has_bandit  = os.path.isfile(os.path.join(project_dir, "bandit.json"))
+                has_bandit = os.path.isfile(os.path.join(project_dir, "bandit.json"))
                 scanned_at = None
                 if has_semgrep:
                     try:

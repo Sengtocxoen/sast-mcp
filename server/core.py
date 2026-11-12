@@ -9,6 +9,7 @@ import logging
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -19,7 +20,6 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from datetime import datetime
 from enum import Enum
 from multiprocessing import Manager
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import psutil
@@ -33,7 +33,6 @@ from config import (
     DEFAULT_PAGE_SIZE,
     ENABLE_CHECKSUM_VERIFICATION,
     ENABLE_RESULT_VALIDATION,
-    FORCE_SYNC_SCANS,
     MAX_PARALLEL_SCANS,
     MAX_PROCESS_WORKERS,
     MAX_RETRY_ATTEMPTS,
@@ -56,8 +55,6 @@ from tools.toon_converter import (
     convert_scan_result_to_toon,
     create_ai_compact_format,
     is_toon_available,
-    calculate_token_savings,
-    prepare_toon_for_ai_analysis,
 )
 
 
@@ -74,7 +71,9 @@ def resolve_grep_engine(default: str = "opengrep") -> str:
         if shutil.which(binary):
             return binary
     return default
-from tools.ai_analysis import (
+
+
+from tools.ai_analysis import (  # noqa: E402
     analyze_scan_results,
     create_toon_analysis_result,
 )
@@ -605,11 +604,7 @@ class CommandExecutor:
                 self.return_code = self.process.wait(timeout=self.timeout)
             except subprocess.TimeoutExpired:
                 self.timed_out = True
-                self.process.terminate()
-                try:
-                    self.process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    self.process.kill()
+                self._kill_group()
                 self.return_code = -1
             t1.join(timeout=5)
             t2.join(timeout=5)
@@ -630,6 +625,28 @@ class CommandExecutor:
                 "stdout": self.stdout_data, "stderr": str(e), "return_code": -1,
                 "success": False, "timed_out": False, "partial_results": bool(self.stdout_data or self.stderr_data), "error": str(e),
             }
+
+    def _kill_group(self) -> None:
+        """Stop the shell AND its children. terminate() alone hit only the shell,
+        so a timed-out tar or grep kept running as an orphan."""
+        try:
+            pgid = os.getpgid(self.process.pid)
+            os.killpg(pgid, signal.SIGTERM)
+            try:
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            # The shell can exit on SIGTERM while a child ignores it; kill the rest.
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        except (AttributeError, OSError):
+            # No process groups (Windows): fall back to the shell alone.
+            self.process.kill()
+        try:
+            self.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
 
 
 def execute_command(command: str, cwd: Optional[str] = None, timeout: int = COMMAND_TIMEOUT) -> Dict[str, Any]:
@@ -672,7 +689,8 @@ def _findings_exit_ok(command: str, return_code: Optional[int]) -> bool:
 # ---------------------------------------------------------------------------
 # Validation and retry
 # ---------------------------------------------------------------------------
-import hashlib
+import hashlib  # noqa: E402
+
 
 def calculate_checksum(data: str) -> str:
     return hashlib.sha256(data.encode("utf-8")).hexdigest()

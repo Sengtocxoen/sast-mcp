@@ -29,7 +29,6 @@ def register(app: Flask) -> None:
             job_id = params.get("job_id", "")
             analysis_type = params.get("analysis_type", "full")
             custom_prompt = params.get("custom_prompt", None)
-            include_sections = params.get("include", ["summary", "remediation", "priorities"])
 
             if not job_id:
                 return jsonify({"error": "job_id parameter is required"}), 400
