@@ -49,11 +49,9 @@ LICENSE: MIT
 """
 
 import sys
-import os
 import argparse
 import logging
 from typing import Dict, Any, List, Optional
-import asyncio
 import aiohttp
 
 from mcp.server.fastmcp import FastMCP
@@ -88,6 +86,7 @@ DEFAULT_REQUEST_TIMEOUT = 600  # 10 minutes
 # ============================================================================
 # HTTP CLIENT
 # ============================================================================
+
 
 class SASTToolsClient:
     """

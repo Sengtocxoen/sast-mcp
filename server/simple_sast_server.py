@@ -48,14 +48,10 @@ import os
 import subprocess
 import sys
 import traceback
-import threading
 import time
-import tempfile
-import shutil
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional
 from flask import Flask, request, jsonify
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import wraps
 
 # Simple configuration from environment variables
@@ -89,6 +85,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+
 
 def get_tool_timeout(tool_name: str) -> int:
     """Get timeout for specific tool"""
@@ -272,6 +269,7 @@ class SimpleCommandExecutor:
                 "error": str(e)
             }
 
+
 def require_api_key(f):
     """Decorator to require API key if configured"""
     @wraps(f)
@@ -283,6 +281,7 @@ def require_api_key(f):
         return f(*args, **kwargs)
     return decorated_function
 
+
 def execute_command(command: str, target: str, tool_name: str, cwd: Optional[str] = None, timeout: int = None) -> Dict[str, Any]:
     """Execute command with proper timeout"""
     timeout = timeout or get_tool_timeout(tool_name)
@@ -292,6 +291,7 @@ def execute_command(command: str, target: str, tool_name: str, cwd: Optional[str
 # ============================================================================
 # SAST TOOL ENDPOINTS
 # ============================================================================
+
 
 @app.route("/api/sast/opengrep", methods=["POST"])
 @require_api_key
@@ -346,6 +346,7 @@ def opengrep():
         logger.error(traceback.format_exc())
         return jsonify({"error": f"Server error: {str(e)}", "success": False}), 500
 
+
 @app.route("/api/sast/bandit", methods=["POST"])
 @require_api_key
 def bandit():
@@ -374,7 +375,7 @@ def bandit():
         if output_format == "json" and result["stdout"]:
             try:
                 result["parsed_output"] = json.loads(result["stdout"])
-            except:
+            except Exception:
                 pass
 
         return jsonify(result)
@@ -382,6 +383,7 @@ def bandit():
         logger.error(f"Error in bandit endpoint: {str(e)}")
         logger.error(traceback.format_exc())
         return jsonify({"error": f"Server error: {str(e)}", "success": False}), 500
+
 
 @app.route("/api/secrets/trufflehog", methods=["POST"])
 @require_api_key
@@ -416,7 +418,7 @@ def trufflehog():
                     if line.strip():
                         secrets.append(json.loads(line))
                 result["parsed_secrets"] = secrets
-            except:
+            except Exception:
                 pass
 
         return jsonify(result)
@@ -424,6 +426,7 @@ def trufflehog():
         logger.error(f"Error in trufflehog endpoint: {str(e)}")
         logger.error(traceback.format_exc())
         return jsonify({"error": f"Server error: {str(e)}", "success": False}), 500
+
 
 @app.route("/api/dependencies/safety", methods=["POST"])
 @require_api_key
@@ -458,6 +461,7 @@ def safety():
         logger.error(f"Error in safety endpoint: {str(e)}")
         logger.error(traceback.format_exc())
         return jsonify({"error": f"Server error: {str(e)}", "success": False}), 500
+
 
 @app.route("/api/orchestration/simple-scan", methods=["POST"])
 @require_api_key
@@ -501,7 +505,7 @@ def simple_comprehensive_scan():
             if result.get("success") and result.get("stdout"):
                 try:
                     results[tool]["parsed_output"] = json.loads(result["stdout"])
-                except:
+                except Exception:
                     pass
 
         end_time = time.time()
@@ -526,6 +530,7 @@ def simple_comprehensive_scan():
         logger.error(traceback.format_exc())
         return jsonify({"error": f"Server error: {str(e)}", "success": False}), 500
 
+
 @app.route("/api/command", methods=["POST"])
 @require_api_key
 def generic_command():
@@ -544,6 +549,7 @@ def generic_command():
     except Exception as e:
         logger.error(f"Error in command endpoint: {str(e)}")
         return jsonify({"error": f"Server error: {str(e)}", "success": False}), 500
+
 
 @app.route("/health", methods=["GET"])
 def health_check():
@@ -573,7 +579,7 @@ def health_check():
             executor = SimpleCommandExecutor(check_cmd, timeout=10, tool_name=tool_name)
             result = executor.execute()
             return tool_name, result["success"]
-        except:
+        except Exception:
             return tool_name, False
 
     # Check all tools
@@ -602,12 +608,13 @@ def health_check():
 
     return jsonify(health_info)
 
+
 if __name__ == "__main__":
     # Parse arguments
     parser = argparse.ArgumentParser(description="Run the Simple SAST Tools API Server")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     parser.add_argument("--port", type=int, default=API_PORT,
-                       help=f"Port for the API server (default: {API_PORT})")
+                        help=f"Port for the API server (default: {API_PORT})")
     args = parser.parse_args()
 
     if args.debug:

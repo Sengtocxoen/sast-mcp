@@ -12,18 +12,15 @@ Usage:
     python sast_client.py --base-path F:\\work\\Resola --tools opengrep,bandit
     python sast_client.py --help
 
-Author: Security Team  
+Author: Security Team
 Date: 2026-01-29
 """
 
 import argparse
-import json
-import os
 import sys
 import time
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple
-from datetime import datetime
+from typing import List, Dict, Optional
 import requests
 
 # Rich UI components
@@ -32,8 +29,6 @@ try:
     from rich.table import Table
     from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
     from rich.panel import Panel
-    from rich.live import Live
-    from rich.layout import Layout
     from rich import box
     RICH_AVAILABLE = True
 except ImportError:
@@ -56,8 +51,6 @@ try:
         SHOW_SERVER_STATS,
         get_tool_endpoint,
         get_tool_display_name,
-        translate_path_to_linux,
-        validate_windows_path
     )
 except ImportError:
     print("❌ Error: config.py not found!")
@@ -75,7 +68,7 @@ console = Console() if RICH_AVAILABLE and ENABLE_RICH_UI else None
 def check_server_health() -> bool:
     """
     Check if SAST server is running and healthy.
-    
+
     Returns:
         True if server is healthy, False otherwise
     """
@@ -96,7 +89,7 @@ def check_server_health() -> bool:
 def get_server_statistics() -> Optional[Dict]:
     """
     Get server statistics (CPU, memory, active scans).
-    
+
     Returns:
         Dictionary with server stats or None if unavailable
     """
@@ -115,29 +108,29 @@ def get_server_statistics() -> Optional[Dict]:
 def submit_scan(project_path: str, tool: str) -> Optional[str]:
     """
     Submit a scan job to the server.
-    
+
     Args:
         project_path: Windows path to project (e.g., 'F:/work/Resola/mp-api')
         tool: Tool name (e.g., 'opengrep', 'bandit')
-        
+
     Returns:
         Job ID if successful, None otherwise
     """
     try:
         endpoint = get_tool_endpoint(tool)
-        
+
         payload = {
             "target": project_path,
             "background": True
         }
-        
+
         response = requests.post(
             f"{SAST_SERVER_URL}/api/{endpoint}",
             json=payload,
             headers={"Content-Type": "application/json"},
             timeout=SUBMIT_TIMEOUT
         )
-        
+
         if response.status_code == 200:
             data = response.json()
             return data.get("job_id")
@@ -147,7 +140,7 @@ def submit_scan(project_path: str, tool: str) -> Optional[str]:
             else:
                 print(f"✗ Scan submission failed: HTTP {response.status_code}")
             return None
-            
+
     except requests.RequestException as e:
         if console:
             console.print(f"[red]✗ Error submitting scan: {e}[/red]")
@@ -159,10 +152,10 @@ def submit_scan(project_path: str, tool: str) -> Optional[str]:
 def get_job_status(job_id: str) -> Optional[Dict]:
     """
     Get current status of a job.
-    
+
     Args:
         job_id: Job ID from submit_scan()
-        
+
     Returns:
         Job status dictionary or None if error
     """
@@ -171,11 +164,11 @@ def get_job_status(job_id: str) -> Optional[Dict]:
             f"{SAST_SERVER_URL}/api/jobs/{job_id}",
             timeout=HEALTH_CHECK_TIMEOUT
         )
-        
+
         if response.status_code == 200:
             return response.json().get("job", {})
         return None
-        
+
     except requests.RequestException:
         return None
 
@@ -187,12 +180,12 @@ def get_job_status(job_id: str) -> Optional[Dict]:
 def is_project_root(path: Path) -> bool:
     """
     Check if directory is a project root.
-    
+
     Looks for project markers like package.json, requirements.txt, etc.
-    
+
     Args:
         path: Directory path to check
-        
+
     Returns:
         True if directory appears to be a project root
     """
@@ -205,36 +198,36 @@ def is_project_root(path: Path) -> bool:
 def discover_projects(base_path: Path, exclude: List[str] = EXCLUDE_DIRS) -> List[Path]:
     """
     Recursively discover projects under base path.
-    
+
     Args:
         base_path: Root directory to search
         exclude: List of directory names to exclude
-        
+
     Returns:
         List of project root directories
     """
     projects = []
-    
+
     try:
         for item in base_path.iterdir():
             # Skip excluded directories
             if item.name in exclude or item.name.startswith('.'):
                 continue
-            
+
             # Skip files
             if not item.is_dir():
                 continue
-            
+
             # Check if this is a project root
             if is_project_root(item):
                 projects.append(item)
             else:
                 # Recurse into subdirectories
                 projects.extend(discover_projects(item, exclude))
-    
+
     except PermissionError:
         pass  # Skip directories we can't access
-    
+
     return projects
 
 
@@ -245,19 +238,19 @@ def discover_projects(base_path: Path, exclude: List[str] = EXCLUDE_DIRS) -> Lis
 def wait_for_completion(job_id: str, job_name: str, progress_task=None, progress=None) -> Dict:
     """
     Poll server until job completes.
-    
+
     Args:
         job_id: Job ID to monitor
         job_name: Human-readable job name for display
         progress_task: Rich progress task ID (optional)
         progress: Rich Progress object (optional)
-        
+
     Returns:
         Final job status dictionary
     """
     start_time = time.time()
     poll_count = 0
-    
+
     while True:
         # Check if max time exceeded
         elapsed = time.time() - start_time
@@ -266,16 +259,16 @@ def wait_for_completion(job_id: str, job_name: str, progress_task=None, progress
                 "status": "timeout",
                 "error": f"Job exceeded maximum wait time ({MAX_POLL_TIME}s)"
             }
-        
+
         # Get job status
         job_status = get_job_status(job_id)
-        
+
         if not job_status:
             time.sleep(POLL_INTERVAL)
             continue
-        
+
         status = job_status.get("status", "unknown")
-        
+
         # Update progress if Rich UI available
         if progress and progress_task is not None:
             if status == "running":
@@ -294,11 +287,11 @@ def wait_for_completion(job_id: str, job_name: str, progress_task=None, progress
                     description=f"[red]{job_name}[/red] ✗ {error}",
                     completed=100
                 )
-        
+
         # Check if complete
         if status in ["completed", "failed", "cancelled"]:
             return job_status
-        
+
         # Adaptive polling: slow down for long-running jobs
         poll_count += 1
         interval = POLL_INTERVAL if poll_count < 10 else min(POLL_INTERVAL * 2, 15)
@@ -313,42 +306,42 @@ def display_server_stats():
     """Display server statistics in a nice panel."""
     if not console:
         return
-    
+
     stats = get_server_statistics()
     if not stats:
         console.print("[yellow]⚠ Server statistics unavailable[/yellow]")
         return
-    
+
     scan_stats = stats.get("scan_statistics", {})
     process_health = stats.get("process_health", {})
     system_info = stats.get("system_info", {})
-    
+
     table = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
     table.add_column("Metric", style="cyan")
     table.add_column("Value", style="white")
-    
+
     # Active scans
     active = scan_stats.get("active_scans", 0)
     max_scans = system_info.get("max_parallel_scans", 4)
     table.add_row("Active Scans", f"{active}/{max_scans}")
-    
+
     # Completed/Failed
     completed = scan_stats.get("completed_scans", 0)
     failed = scan_stats.get("failed_scans", 0)
     table.add_row("Completed", str(completed))
     table.add_row("Failed", str(failed))
-    
+
     # CPU/Memory
     cpu = process_health.get("cpu_percent", 0)
     memory = process_health.get("memory_percent", 0)
     table.add_row("CPU Usage", f"{cpu:.1f}%")
     table.add_row("Memory Usage", f"{memory:.1f}%")
-    
+
     # Health
     healthy = process_health.get("healthy", True)
     health_str = "[green]✓ Healthy[/green]" if healthy else "[red]✗ Unhealthy[/red]"
     table.add_row("Server Status", health_str)
-    
+
     panel = Panel(
         table,
         title="[bold cyan]SAST Server Status[/bold cyan]",
@@ -366,15 +359,15 @@ def display_project_list(projects: List[Path]):
             print(f"  {i}. {proj.name}")
         print()
         return
-    
+
     table = Table(title=f"Discovered Projects ({len(projects)})", box=box.ROUNDED)
     table.add_column("#", style="dim", width=4)
     table.add_column("Project Name", style="cyan")
     table.add_column("Path", style="dim")
-    
+
     for i, proj in enumerate(projects, 1):
         table.add_row(str(i), proj.name, str(proj.parent))
-    
+
     console.print(table)
     console.print()
 
@@ -383,20 +376,20 @@ def display_scan_summary(results: List[Dict], total_duration: float):
     """Display final scan summary."""
     completed = sum(1 for r in results if r.get("status") == "completed")
     failed = sum(1 for r in results if r.get("status") in ["failed", "timeout"])
-    
+
     if console:
         table = Table(box=box.DOUBLE, show_header=False, padding=(0, 2))
         table.add_column("Metric", style="bold cyan")
         table.add_column("Value", style="bold white")
-        
+
         table.add_row("Total Scans", str(len(results)))
         table.add_row("[green]Completed[/green]", str(completed))
         table.add_row("[red]Failed[/red]", str(failed))
         table.add_row("Duration", f"{total_duration:.1f}s")
-        
+
         success_rate = (completed / len(results) * 100) if results else 0
         table.add_row("Success Rate", f"{success_rate:.1f}%")
-        
+
         panel = Panel(
             table,
             title="[bold green]Scan Summary[/bold green]",
@@ -422,7 +415,7 @@ def display_scan_summary(results: List[Dict], total_duration: float):
 def scan_projects(projects: List[Path], tools: List[str], dry_run: bool = False):
     """
     Scan multiple projects with specified tools.
-    
+
     Args:
         projects: List of project paths to scan
         tools: List of tool names to run
@@ -434,12 +427,12 @@ def scan_projects(projects: List[Path], tools: List[str], dry_run: bool = False)
         else:
             print("DRY RUN MODE - No scans will be submitted\n")
         return
-    
+
     # Calculate total jobs
     total_jobs = len(projects) * len(tools)
     results = []
     start_time = time.time()
-    
+
     if console and RICH_AVAILABLE:
         # Rich UI with progress bars
         with Progress(
@@ -449,27 +442,27 @@ def scan_projects(projects: List[Path], tools: List[str], dry_run: bool = False)
             TaskProgressColumn(),
             console=console
         ) as progress:
-            
+
             overall_task = progress.add_task(
                 "[cyan]Overall Progress",
                 total=total_jobs
             )
-            
+
             for project in projects:
                 project_name = project.name
-                
+
                 for tool in tools:
                     tool_name = get_tool_display_name(tool)
                     job_name = f"{tool_name}: {project_name}"
-                    
+
                     # Submit scan
                     job_task = progress.add_task(
                         f"[yellow]{job_name}[/yellow] Submitting...",
                         total=100
                     )
-                    
+
                     job_id = submit_scan(str(project), tool)
-                    
+
                     if not job_id:
                         progress.update(
                             job_task,
@@ -479,7 +472,7 @@ def scan_projects(projects: List[Path], tools: List[str], dry_run: bool = False)
                         results.append({"status": "failed", "job_name": job_name})
                         progress.advance(overall_task)
                         continue
-                    
+
                     # Wait for completion
                     result = wait_for_completion(job_id, job_name, job_task, progress)
                     results.append({
@@ -487,49 +480,49 @@ def scan_projects(projects: List[Path], tools: List[str], dry_run: bool = False)
                         "job_name": job_name,
                         "duration": result.get("duration_seconds", 0)
                     })
-                    
+
                     progress.advance(overall_task)
     else:
         # Basic console output
         print(f"\nScanning {len(projects)} projects with {len(tools)} tools...")
         print(f"Total jobs: {total_jobs}\n")
-        
+
         job_num = 0
         for project in projects:
             project_name = project.name
-            
+
             for tool in tools:
                 job_num += 1
                 tool_name = get_tool_display_name(tool)
                 job_name = f"{tool_name}: {project_name}"
-                
+
                 print(f"[{job_num}/{total_jobs}] {job_name}... ", end="", flush=True)
-                
+
                 # Submit scan
                 job_id = submit_scan(str(project), tool)
-                
+
                 if not job_id:
                     print("✗ Submission failed")
                     results.append({"status": "failed", "job_name": job_name})
                     continue
-                
+
                 # Wait for completion
                 result = wait_for_completion(job_id, job_name)
                 status = result.get("status")
-                
+
                 if status == "completed":
                     duration = result.get("duration_seconds", 0)
                     print(f"✓ Completed ({duration:.1f}s)")
                 else:
                     error = result.get("error", "Unknown error")
                     print(f"✗ Failed: {error}")
-                
+
                 results.append({
                     "status": status,
                     "job_name": job_name,
                     "duration": result.get("duration_seconds", 0)
                 })
-    
+
     # Display summary
     total_duration = time.time() - start_time
     display_scan_summary(results, total_duration)
@@ -548,18 +541,18 @@ def main():
 Examples:
   # Scan all projects in Resola folder
   python sast_client.py --base-path F:\\work\\Resola
-  
+
   # Scan specific project
   python sast_client.py --project F:\\work\\Resola\\mp-api
-  
+
   # Use specific tools
   python sast_client.py --base-path F:\\work\\Resola --tools opengrep,bandit
-  
+
   # Dry run (preview projects)
   python sast_client.py --base-path F:\\work\\Resola --dry-run
         """
     )
-    
+
     parser.add_argument(
         '--base-path',
         type=str,
@@ -581,9 +574,9 @@ Examples:
         action='store_true',
         help='Preview projects without scanning'
     )
-    
+
     args = parser.parse_args()
-    
+
     # Banner
     if console:
         console.print("\n[bold magenta]" + "="*80 + "[/bold magenta]")
@@ -599,35 +592,35 @@ Examples:
         print(f"Server: {SAST_SERVER_URL}")
         print(f"Tools: {args.tools}")
         print("="*80 + "\n")
-    
+
     # Check server health
     if console:
         console.print("[cyan]Checking server health...[/cyan]")
     else:
         print("Checking server health...")
-    
+
     if not check_server_health():
         if console:
             console.print("[red]✗ Server is not responding. Please check:[/red]")
-            console.print(f"[red]  1. Is the Kali VM running?[/red]")
+            console.print("[red]  1. Is the Kali VM running?[/red]")
             console.print(f"[red]  2. Is sast_server.py running on {SAST_SERVER_URL}?[/red]")
-            console.print(f"[red]  3. Can you ping 192.168.204.160?[/red]")
+            console.print("[red]  3. Can you ping 192.168.204.160?[/red]")
         else:
             print("✗ Server is not responding. Please check:")
             print("  1. Is the Kali VM running?")
             print(f"  2. Is sast_server.py running on {SAST_SERVER_URL}?")
             print("  3. Can you ping 192.168.204.160?")
         sys.exit(1)
-    
+
     if console:
         console.print("[green]✓ Server is healthy[/green]\n")
     else:
         print("✓ Server is healthy\n")
-    
+
     # Show server stats
     if SHOW_SERVER_STATS:
         display_server_stats()
-    
+
     # Discover or validate projects
     if args.project:
         # Single project mode
@@ -638,7 +631,7 @@ Examples:
             else:
                 print(f"✗ Project not found: {args.project}")
             sys.exit(1)
-        
+
         projects = [project_path]
     elif args.base_path:
         # Discovery mode
@@ -649,14 +642,14 @@ Examples:
             else:
                 print(f"✗ Base path not found: {args.base_path}")
             sys.exit(1)
-        
+
         if console:
             console.print(f"[cyan]Discovering projects in {args.base_path}...[/cyan]\n")
         else:
             print(f"Discovering projects in {args.base_path}...\n")
-        
+
         projects = discover_projects(base_path)
-        
+
         if not projects:
             if console:
                 console.print("[yellow]⚠ No projects discovered[/yellow]")
@@ -666,13 +659,13 @@ Examples:
     else:
         parser.print_help()
         sys.exit(1)
-    
+
     # Display projects
     display_project_list(projects)
-    
+
     # Parse tools
     tools = [t.strip() for t in args.tools.split(',')]
-    
+
     # Start scanning
     scan_projects(projects, tools, args.dry_run)
 

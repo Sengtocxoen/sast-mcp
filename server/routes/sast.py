@@ -20,7 +20,6 @@ from config import (
 from core import (
     execute_command,
     resolve_grep_engine,
-    resolve_windows_path,
     validate_scan_target,
     run_scan_in_background,
     run_scan_synchronously,
@@ -38,9 +37,10 @@ def _safe_args(additional_args: str) -> str:
         tokens = additional_args.split()
     return " ".join(shlex.quote(t) for t in tokens)
 
+
 logger = logging.getLogger(__name__)
 
-import os as _os
+import os as _os  # noqa: E402
 
 
 # "auto" asks the registry to build a config, which opengrep refuses to do
@@ -67,7 +67,9 @@ def _grep_perf_flags(extra: str) -> str:
     and can't hang on a pathological file. Only adds a flag the caller omitted."""
     from config import MAX_PROCESS_WORKERS, SCAN_MEMORY_MAX_MB, OPENGREP_JOBS, OPENGREP_MAX_MEMORY_MB
     flags = []
-    has = lambda f: (f in extra)
+
+    def has(f):
+        return f in extra
     per = OPENGREP_MAX_MEMORY_MB  # MB per worker
     if not has("--jobs") and not has("-j "):
         if OPENGREP_JOBS > 0:

@@ -93,7 +93,9 @@ def _tool_functional(tool: str, check_cmd: str) -> Dict[str, Any]:
     if r.get("timed_out"):
         return {"status": "slow", "return_code": rc, "detail": "no response within 20s"}
     return {"status": "ok", "return_code": rc}
-from config import (
+
+
+from config import (  # noqa: E402
     DEPENDENCY_CHECK_PATH,
     FORCE_SYNC_SCANS,
     USE_MULTIPROCESSING,

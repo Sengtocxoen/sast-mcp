@@ -20,7 +20,6 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from datetime import datetime
 from enum import Enum
 from multiprocessing import Manager
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import psutil
@@ -34,7 +33,6 @@ from config import (
     DEFAULT_PAGE_SIZE,
     ENABLE_CHECKSUM_VERIFICATION,
     ENABLE_RESULT_VALIDATION,
-    FORCE_SYNC_SCANS,
     MAX_PARALLEL_SCANS,
     MAX_PROCESS_WORKERS,
     MAX_RETRY_ATTEMPTS,
@@ -57,8 +55,6 @@ from tools.toon_converter import (
     convert_scan_result_to_toon,
     create_ai_compact_format,
     is_toon_available,
-    calculate_token_savings,
-    prepare_toon_for_ai_analysis,
 )
 
 
@@ -75,7 +71,9 @@ def resolve_grep_engine(default: str = "opengrep") -> str:
         if shutil.which(binary):
             return binary
     return default
-from tools.ai_analysis import (
+
+
+from tools.ai_analysis import (  # noqa: E402
     analyze_scan_results,
     create_toon_analysis_result,
 )
@@ -691,7 +689,8 @@ def _findings_exit_ok(command: str, return_code: Optional[int]) -> bool:
 # ---------------------------------------------------------------------------
 # Validation and retry
 # ---------------------------------------------------------------------------
-import hashlib
+import hashlib  # noqa: E402
+
 
 def calculate_checksum(data: str) -> str:
     return hashlib.sha256(data.encode("utf-8")).hexdigest()

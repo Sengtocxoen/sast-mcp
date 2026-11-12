@@ -2,7 +2,6 @@
 import json
 import logging
 import traceback
-from typing import Any, Dict
 
 from flask import Flask, request, jsonify
 
