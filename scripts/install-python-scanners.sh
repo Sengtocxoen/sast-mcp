@@ -28,10 +28,15 @@ if ! command -v pipx >/dev/null 2>&1; then
   exit 1
 fi
 
-# A symlink in ~/.local/bin pointing into the server venv is already broken, or
-# will break on the next rebuild. Clear it so pipx can own the name.
+# pipx's own bin dir, rather than assuming ~/.local/bin.
+PIPX_BIN_DIR="$(pipx environment --value PIPX_BIN_DIR 2>/dev/null || true)"
+PIPX_BIN_DIR="${PIPX_BIN_DIR:-${HOME}/.local/bin}"
+echo "pipx bin dir: ${PIPX_BIN_DIR}"
+
+# A symlink in the pipx bin dir pointing into the server venv is already broken,
+# or will break on the next rebuild. Clear it so pipx can own the name.
 for tool in "${TOOLS[@]}"; do
-  link="${HOME}/.local/bin/${tool}"
+  link="${PIPX_BIN_DIR}/${tool}"
   if [ -L "$link" ]; then
     target="$(readlink -f "$link" || true)"
     if [ -z "$target" ] || [ ! -e "$target" ] || [[ "$target" == "$VENV_BIN"/* ]]; then
@@ -41,23 +46,47 @@ for tool in "${TOOLS[@]}"; do
   fi
 done
 
+# `pipx upgrade` is a no-op when the package is already at the latest version,
+# and a no-op does NOT re-create a missing app symlink. Combined with the
+# stale-link removal above, that left pipx reporting "semgrep is already at
+# latest version" on every run while nothing was ever linked into
+# ${PIPX_BIN_DIR} - so the tool stayed invisible to PATH, to /health and to
+# scans. When the package is present but its link is not, force a reinstall.
 for tool in "${TOOLS[@]}"; do
+  link="${PIPX_BIN_DIR}/${tool}"
   if pipx list --short 2>/dev/null | awk '{print $1}' | grep -qx "$tool"; then
-    echo "== upgrading $tool"
-    pipx upgrade "$tool" || true
+    if [ -x "$link" ]; then
+      echo "== upgrading $tool"
+      pipx upgrade "$tool" || true
+    else
+      echo "== reinstalling $tool (pipx has the package, but ${link} is missing)"
+      pipx install --force "$tool"
+    fi
   else
     echo "== installing $tool"
     pipx install "$tool"
   fi
 done
 
+# Make the bin dir reachable from the invoking user's interactive shells. This
+# does not affect sudo (secure_path) or the server, which gets the directory
+# from core.get_enhanced_env().
+pipx ensurepath >/dev/null 2>&1 || true
+
 echo
 echo "== verification"
 status=0
 for tool in "${TOOLS[@]}"; do
   path="$(command -v "$tool" || true)"
+  if [ -z "$path" ] && [ -x "${PIPX_BIN_DIR}/${tool}" ]; then
+    # Running under sudo, PATH is sudo's secure_path and will not contain the
+    # pipx bin dir. The tool is installed; reporting FAIL here is what made the
+    # installer announce three working scanners as broken.
+    echo "warn  ${tool}: installed at ${PIPX_BIN_DIR}/${tool}, which is not on this shell's PATH"
+    path="${PIPX_BIN_DIR}/${tool}"
+  fi
   if [ -z "$path" ]; then
-    echo "FAIL  ${tool}: not on PATH"
+    echo "FAIL  ${tool}: not installed (no ${PIPX_BIN_DIR}/${tool}, not on PATH)"
     status=1
     continue
   fi

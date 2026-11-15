@@ -52,6 +52,81 @@ command_exists() {
 }
 
 ################################################################################
+# EFFECTIVE PATH FOR TOOL CHECKS
+#
+# Installers write to places sudo's secure_path does not always list: gem and
+# npm use a prefix of their own, go uses $GOPATH/bin, and pipx uses the
+# invoking user's ~/.local/bin. When a tool lands in one of those it is
+# installed and runnable, yet `command -v <tool>` here says no - so the run
+# ends with a "Failed tools" list that names working tools. On 2026-11-15 both
+# tfsec and bearer printed their own "installed at /usr/local/bin" line and
+# were still reported as failures.
+#
+# Build the PATH once, covering every directory the steps below install into,
+# and export it so the installers and the final verification agree.
+################################################################################
+
+INSTALL_USER="${SUDO_USER:-${USER:-root}}"
+INSTALL_USER_HOME="$(getent passwd "$INSTALL_USER" 2>/dev/null | cut -d: -f6)"
+[ -n "$INSTALL_USER_HOME" ] || INSTALL_USER_HOME="${HOME:-/root}"
+
+add_to_path() {
+    case ":$PATH:" in
+        *":$1:"*) return 0 ;;
+    esac
+    if [ -n "$1" ] && [ -d "$1" ]; then
+        PATH="$1:$PATH"
+    fi
+    return 0
+}
+
+GEM_BIN="$(gem environment gemdir 2>/dev/null)/bin"
+NPM_BIN="$(npm prefix -g 2>/dev/null)/bin"
+PIPX_BIN="$INSTALL_USER_HOME/.local/bin"
+for _dir in /usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin \
+            /snap/bin /root/.local/bin /root/go/bin /usr/local/go/bin \
+            "$PIPX_BIN" "$INSTALL_USER_HOME/go/bin" "$GEM_BIN" "$NPM_BIN"; do
+    add_to_path "$_dir"
+done
+export PATH
+
+# Where the installers that used to be silenced leave their output.
+LOG_DIR="${LOG_DIR:-/tmp/sast-install-logs}"
+mkdir -p "$LOG_DIR" 2>/dev/null || LOG_DIR=/tmp
+
+run_logged() {
+    # run_logged <name> <cmd...>: run quietly, keep the output, show the tail
+    # on failure. Replaces `cmd >/dev/null 2>&1` followed by an unconditional
+    # success message - the pattern that had brakeman and snyk reporting
+    # installed while their install had actually failed.
+    local name="$1"; shift
+    local log="$LOG_DIR/${name}.log"
+    local rc=0
+    "$@" >"$log" 2>&1 || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        print_warning "$name failed (exit $rc). Last lines of $log:"
+        tail -5 "$log" 2>/dev/null | sed 's/^/      /'
+    fi
+    return "$rc"
+}
+
+github_latest_tag() {
+    # grep -o rather than a line match: this endpoint can return the whole
+    # release object on a single line (0 newlines), in which case a
+    # line-based `cut -d'"' -f4` yields the fourth quoted string in the
+    # entire document - the release URL - instead of the tag.
+    curl -fsSL --max-time 30 "https://api.github.com/repos/$1/releases/latest" 2>/dev/null \
+        | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' \
+        | head -1 | cut -d'"' -f4
+}
+
+case "$(uname -m)" in
+    x86_64|amd64)  REL_ARCH="amd64"; OPENGREP_ASSET="opengrep_linux_x86" ;;
+    aarch64|arm64) REL_ARCH="arm64"; OPENGREP_ASSET="opengrep_linux_aarch64" ;;
+    *)             REL_ARCH="";      OPENGREP_ASSET="" ;;
+esac
+
+################################################################################
 # SYSTEM UPDATE
 ################################################################################
 
@@ -107,34 +182,66 @@ echo -e "${BLUE}Installing SAST Tools...${NC}"
 echo ""
 
 # Opengrep
+#
+# Opengrep is not published on PyPI (pypi.org/pypi/opengrep/json returns 404),
+# so the old `pip install opengrep` could never have worked. On Kali it failed
+# twice over, because PEP 668 refuses system-wide pip installs. The release
+# binary is the supported install path.
 print_status "Installing Opengrep..."
-if ! command_exists opengrep; then
-    python3 -m pip install --upgrade opengrep 2>&1 | grep -v "WARNING" || true
-    print_success "Opengrep installed"
+if command_exists opengrep; then
+    print_warning "Opengrep already installed ($(command -v opengrep))"
+elif [ -z "$OPENGREP_ASSET" ]; then
+    print_warning "Opengrep: no release binary for $(uname -m), skipping"
 else
-    print_warning "Opengrep already installed"
+    OPENGREP_TAG="$(github_latest_tag opengrep/opengrep)"
+    OPENGREP_TAG="${OPENGREP_TAG:-v2.0.0}"
+    if curl -fsSL --max-time 300 -o /usr/local/bin/opengrep.new \
+        "https://github.com/opengrep/opengrep/releases/download/${OPENGREP_TAG}/${OPENGREP_ASSET}"; then
+        chmod +x /usr/local/bin/opengrep.new
+        mv /usr/local/bin/opengrep.new /usr/local/bin/opengrep
+    else
+        rm -f /usr/local/bin/opengrep.new
+    fi
+    if command_exists opengrep && opengrep --version >/dev/null 2>&1; then
+        print_success "Opengrep ${OPENGREP_TAG} installed ($(command -v opengrep))"
+    else
+        rm -f /usr/local/bin/opengrep
+        print_warning "Opengrep install failed (tag=${OPENGREP_TAG} asset=${OPENGREP_ASSET})"
+    fi
 fi
 
 # Bandit
 print_status "Installing Bandit..."
-if ! command_exists bandit; then
-    pip3 install bandit >/dev/null 2>&1
-    print_success "Bandit installed"
+if command_exists bandit; then
+    print_warning "Bandit already installed ($(command -v bandit))"
 else
-    print_warning "Bandit already installed"
+    # `pip3 install bandit` is blocked by PEP 668 on Kali. apt carries a
+    # package; pipx is the fallback, installed as the invoking user like the
+    # other Python scanners.
+    run_logged bandit-apt apt install -y bandit \
+        || run_logged bandit-pipx sudo -u "$INSTALL_USER" pipx install bandit \
+        || true
+    if command_exists bandit; then
+        print_success "Bandit installed ($(command -v bandit))"
+    else
+        print_warning "Bandit installation failed - see $LOG_DIR/bandit-*.log"
+    fi
 fi
 
 # Bearer
 print_status "Installing Bearer..."
-if ! command_exists bearer; then
-    curl -sfL https://raw.githubusercontent.com/Bearer/bearer/main/contrib/install.sh 2>/dev/null | sh -s -- -b /usr/local/bin 2>&1 | tail -1 || {
-        print_warning "Bearer installation failed, skipping..."
-    }
-    if command_exists bearer; then
-        print_success "Bearer installed"
-    fi
+if command_exists bearer; then
+    print_warning "Bearer already installed ($(command -v bearer))"
 else
-    print_warning "Bearer already installed"
+    curl -sfL https://raw.githubusercontent.com/Bearer/bearer/main/contrib/install.sh 2>/dev/null \
+        | sh -s -- -b /usr/local/bin >"$LOG_DIR/bearer.log" 2>&1 || true
+    if command_exists bearer; then
+        print_success "Bearer installed ($(command -v bearer))"
+    elif [ -x /usr/local/bin/bearer ]; then
+        print_warning "Bearer is at /usr/local/bin/bearer but not on PATH: $PATH"
+    else
+        print_warning "Bearer installation failed - see $LOG_DIR/bearer.log"
+    fi
 fi
 
 # Graudit
@@ -175,20 +282,28 @@ fi
 
 # Brakeman
 print_status "Installing Brakeman..."
-if ! command_exists brakeman; then
-    gem install brakeman >/dev/null 2>&1
-    print_success "Brakeman installed"
+if command_exists brakeman; then
+    print_warning "Brakeman already installed ($(command -v brakeman))"
 else
-    print_warning "Brakeman already installed"
+    run_logged brakeman gem install --no-document brakeman || true
+    if command_exists brakeman; then
+        print_success "Brakeman installed ($(command -v brakeman))"
+    else
+        print_warning "Brakeman installation failed - see $LOG_DIR/brakeman.log"
+    fi
 fi
 
 # ESLint (with security plugins)
 print_status "Installing ESLint with security plugins..."
-if ! command_exists eslint; then
-    npm install -g eslint eslint-plugin-security >/dev/null 2>&1
-    print_success "ESLint installed"
+if command_exists eslint; then
+    print_warning "ESLint already installed ($(command -v eslint))"
 else
-    print_warning "ESLint already installed"
+    run_logged eslint npm install -g eslint eslint-plugin-security || true
+    if command_exists eslint; then
+        print_success "ESLint installed ($(command -v eslint))"
+    else
+        print_warning "ESLint installation failed - see $LOG_DIR/eslint.log"
+    fi
 fi
 
 ################################################################################
@@ -201,26 +316,32 @@ echo ""
 
 # TruffleHog
 print_status "Installing TruffleHog..."
-if ! command_exists trufflehog; then
-    # Install the newer trufflehog v3 (Go-based version is more reliable)
-    wget -q https://github.com/trufflesecurity/trufflehog/releases/latest/download/trufflehog_linux_amd64.tar.gz 2>/dev/null && {
-        tar -xzf trufflehog_linux_amd64.tar.gz
-        mv trufflehog /usr/local/bin/ 2>/dev/null
-        rm trufflehog_linux_amd64.tar.gz 2>/dev/null
-        chmod +x /usr/local/bin/trufflehog
-    } || {
-        # Fallback to Python version
-        print_warning "Go version failed, trying Python version..."
-        pip3 install truffleHog 2>&1 | grep -v "WARNING" || true
-    }
-
+if command_exists trufflehog; then
+    print_warning "TruffleHog already installed ($(command -v trufflehog))"
+elif [ -z "$REL_ARCH" ]; then
+    print_warning "TruffleHog: no release binary for $(uname -m), skipping"
+else
+    # Release assets carry the version in the filename, e.g.
+    # trufflehog_3.99.9_linux_amd64.tar.gz. The old
+    # releases/latest/download/trufflehog_linux_amd64.tar.gz does not exist and
+    # 404s, which sent every run into a `pip3 install truffleHog` fallback that
+    # PEP 668 blocks - and that package is the abandoned v2 anyway.
+    TH_TAG="$(github_latest_tag trufflesecurity/trufflehog)"
+    TH_VER="${TH_TAG#v}"
+    TH_TMP="$(mktemp -d)"
+    if [ -n "$TH_VER" ] && curl -fsSL --max-time 300 -o "$TH_TMP/trufflehog.tar.gz" \
+        "https://github.com/trufflesecurity/trufflehog/releases/download/${TH_TAG}/trufflehog_${TH_VER}_linux_${REL_ARCH}.tar.gz"; then
+        tar -xzf "$TH_TMP/trufflehog.tar.gz" -C "$TH_TMP" trufflehog 2>/dev/null \
+            && install -m 755 "$TH_TMP/trufflehog" /usr/local/bin/trufflehog
+    else
+        print_warning "TruffleHog download failed (tag=${TH_TAG:-unknown} arch=${REL_ARCH})"
+    fi
+    rm -rf "$TH_TMP"
     if command_exists trufflehog; then
-        print_success "TruffleHog installed"
+        print_success "TruffleHog ${TH_TAG} installed ($(command -v trufflehog))"
     else
         print_warning "TruffleHog installation failed"
     fi
-else
-    print_warning "TruffleHog already installed"
 fi
 
 # Gitleaks
@@ -291,50 +412,63 @@ fi
 print_success "npm audit available (comes with npm)"
 
 # OWASP Dependency-Check
+#
+# Two bugs lived here. First, current.txt now has a second line:
+#   12.1.0
+#   The OWASP DependencyCheck project has moved to https://github.com/...
+# Unquoted, that whole sentence went into the download URL, so wget tried to
+# fetch 'old' and 'repository.-release.zip'. Take the first line only, and read
+# it from the project's new home. Second, the download-failure branch called
+# `return` outside a function, which bash refuses - and the `cd /opt` before it
+# then leaked into the following steps.
 print_status "Installing OWASP Dependency-Check..."
-if ! command_exists dependency-check.sh; then
-    cd /opt
-    # Try to get version, with fallback
-    DEPCHECK_VERSION=$(curl -s https://jeremylong.github.io/DependencyCheck/current.txt 2>/dev/null)
-
-    if [ -z "$DEPCHECK_VERSION" ]; then
-        # Fallback: Try to get from GitHub API
-        DEPCHECK_VERSION=$(curl -s https://api.github.com/repos/jeremylong/DependencyCheck/releases/latest 2>/dev/null | grep -o '"tag_name": "v[^"]*"' | cut -d'"' -f4 | sed 's/v//')
+if command_exists dependency-check.sh; then
+    print_warning "OWASP Dependency-Check already installed"
+else
+    DEPCHECK_VERSION="$(curl -fsSL --max-time 30 \
+        https://dependency-check.github.io/DependencyCheck/current.txt 2>/dev/null \
+        | head -1 | tr -d '[:space:]')"
+    if ! printf '%s' "$DEPCHECK_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+        DEPCHECK_VERSION="$(github_latest_tag dependency-check/DependencyCheck | sed 's/^v//')"
     fi
-
-    if [ -z "$DEPCHECK_VERSION" ]; then
-        print_warning "Could not determine version, using v9.0.9 as fallback..."
-        DEPCHECK_VERSION="9.0.9"
+    if ! printf '%s' "$DEPCHECK_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+        print_warning "Could not determine version, using 12.1.0 as fallback..."
+        DEPCHECK_VERSION="12.1.0"
     fi
 
     print_status "Downloading Dependency-Check v${DEPCHECK_VERSION}..."
-    wget -q --show-progress https://github.com/jeremylong/DependencyCheck/releases/download/v${DEPCHECK_VERSION}/dependency-check-${DEPCHECK_VERSION}-release.zip 2>&1 | tail -2 || {
-        print_warning "Download failed, skipping..."
-        cd - >/dev/null
-        return
-    }
+    DC_ZIP="$LOG_DIR/dependency-check-${DEPCHECK_VERSION}-release.zip"
+    if curl -fsSL --max-time 900 -o "$DC_ZIP" \
+        "https://github.com/dependency-check/DependencyCheck/releases/download/v${DEPCHECK_VERSION}/dependency-check-${DEPCHECK_VERSION}-release.zip"; then
+        rm -rf /opt/dependency-check
+        if unzip -q "$DC_ZIP" -d /opt; then
+            chmod +x /opt/dependency-check/bin/dependency-check.sh
+            ln -sf /opt/dependency-check/bin/dependency-check.sh /usr/local/bin/dependency-check.sh
+        fi
+        rm -f "$DC_ZIP"
+    else
+        print_warning "Dependency-Check download failed (v${DEPCHECK_VERSION})"
+    fi
 
-    if [ -f "dependency-check-${DEPCHECK_VERSION}-release.zip" ]; then
-        unzip -q dependency-check-${DEPCHECK_VERSION}-release.zip
-        rm dependency-check-${DEPCHECK_VERSION}-release.zip
-        chmod +x /opt/dependency-check/bin/dependency-check.sh
-        ln -sf /opt/dependency-check/bin/dependency-check.sh /usr/local/bin/dependency-check.sh
-        print_success "OWASP Dependency-Check installed"
+    if command_exists dependency-check.sh; then
+        print_success "OWASP Dependency-Check v${DEPCHECK_VERSION} installed"
+        command_exists java || print_warning "dependency-check needs a JRE: apt install -y default-jre"
     else
         print_warning "OWASP Dependency-Check installation failed"
     fi
-    cd - >/dev/null
-else
-    print_warning "OWASP Dependency-Check already installed"
 fi
 
 # Snyk
 print_status "Installing Snyk..."
-if ! command_exists snyk; then
-    npm install -g snyk >/dev/null 2>&1
-    print_success "Snyk installed"
+if command_exists snyk; then
+    print_warning "Snyk already installed ($(command -v snyk))"
 else
-    print_warning "Snyk already installed"
+    run_logged snyk npm install -g snyk || true
+    if command_exists snyk; then
+        print_success "Snyk installed ($(command -v snyk))"
+    else
+        print_warning "Snyk installation failed - see $LOG_DIR/snyk.log"
+    fi
 fi
 
 ################################################################################
@@ -352,23 +486,27 @@ echo ""
 
 # tfsec
 print_status "Installing tfsec..."
-if ! command_exists tfsec; then
-    # Try official installation script
-    curl -s https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh 2>/dev/null | bash 2>&1 | tail -1 || {
-        print_warning "Official script failed, trying alternative..."
-        # Fallback: Try apt or go install
-        apt install -y tfsec 2>&1 | grep -v "WARNING" || {
-            go install github.com/aquasecurity/tfsec/cmd/tfsec@latest 2>&1 | tail -1 || true
-            ln -sf /root/go/bin/tfsec /usr/local/bin/tfsec 2>/dev/null || true
-        }
-    }
-    if command_exists tfsec; then
-        print_success "tfsec installed"
-    else
-        print_warning "tfsec installation failed"
-    fi
+if command_exists tfsec; then
+    print_warning "tfsec already installed ($(command -v tfsec))"
 else
-    print_warning "tfsec already installed"
+    # The upstream installer ends by printing "Current tfsec version: v1.28.14".
+    # Piping it through `tail -1` surfaced that line as if it were an error,
+    # while the real problem was that the installed binary in /usr/local/bin
+    # was not on this script's PATH. Keep the output in a log instead.
+    curl -fsSL --max-time 60 \
+        https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh 2>/dev/null \
+        | bash >"$LOG_DIR/tfsec.log" 2>&1 || true
+    if ! command_exists tfsec; then
+        run_logged tfsec-apt apt install -y tfsec \
+            || run_logged tfsec-go go install github.com/aquasecurity/tfsec/cmd/tfsec@latest \
+            || true
+        ln -sf /root/go/bin/tfsec /usr/local/bin/tfsec 2>/dev/null || true
+    fi
+    if command_exists tfsec; then
+        print_success "tfsec installed ($(command -v tfsec))"
+    else
+        print_warning "tfsec installation failed - see $LOG_DIR/tfsec.log"
+    fi
 fi
 
 # Trivy
@@ -482,28 +620,50 @@ echo ""
 echo -e "${BLUE}Installing Python dependencies for MCP server...${NC}"
 echo ""
 
-print_status "Installing Flask and dependencies..."
-python3 -m pip install --upgrade flask python-dotenv requests 2>&1 | grep -v "WARNING" | grep -v "already satisfied" | tail -3 || true
-print_success "Flask and dependencies installed"
+# PEP 668: Kali refuses system-wide pip installs ("externally-managed-
+# environment"), so the three `python3 -m pip install` calls that used to live
+# here failed on every run while still printing success - the hint text in the
+# 2026-11-15 log ("note: If you believe this is a mistake...") is all that was
+# left of them. Install into the repo's own venv instead: that is the
+# interpreter the server runs on, and core.get_enhanced_env() already puts
+# <repo>/venv/bin on the executor PATH.
+#
+# The scanners (semgrep, checkov, safety) deliberately do NOT go in the venv -
+# see scripts/install-python-scanners.sh for why.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VENV_DIR="${SAST_VENV:-$REPO_ROOT/venv}"
 
-print_status "Installing MCP SDK..."
-python3 -m pip install --upgrade mcp 2>&1 | grep -v "WARNING" | grep -v "already satisfied" | tail -3 || {
-    print_warning "MCP SDK installation had warnings, but may still work"
-}
-if python3 -c "import mcp" 2>/dev/null; then
-    print_success "MCP SDK installed and verified"
-else
-    print_warning "MCP SDK may need manual verification"
+print_status "Installing server dependencies into $VENV_DIR..."
+if [ ! -x "$VENV_DIR/bin/python" ]; then
+    run_logged venv-create sudo -u "$INSTALL_USER" python3 -m venv "$VENV_DIR" || true
 fi
 
-print_status "Installing python-toon (TOON format converter)..."
-python3 -m pip install --upgrade python-toon 2>&1 | grep -v "WARNING" | grep -v "already satisfied" | tail -3 || {
-    print_warning "python-toon installation had warnings, but may still work"
-}
-if python3 -c "from toon import encode, decode" 2>/dev/null; then
-    print_success "python-toon installed and verified"
+if [ ! -x "$VENV_DIR/bin/python" ]; then
+    print_warning "No venv at $VENV_DIR - see $LOG_DIR/venv-create.log"
+    print_warning "Server deps not installed. Create it by hand, then:"
+    print_warning "  $VENV_DIR/bin/python -m pip install -r $REPO_ROOT/requirements.txt"
 else
-    print_warning "python-toon may need manual installation: pip install python-toon"
+    run_logged server-deps sudo -u "$INSTALL_USER" "$VENV_DIR/bin/python" -m pip install \
+        --upgrade pip -r "$REPO_ROOT/requirements.txt" || true
+    # python-toon is used by the TOON output path; keep it explicit so a
+    # requirements.txt edit cannot drop it silently.
+    run_logged python-toon sudo -u "$INSTALL_USER" "$VENV_DIR/bin/python" -m pip install \
+        --upgrade python-toon || true
+
+    while IFS='|' read -r label code; do
+        [ -n "$label" ] || continue
+        if "$VENV_DIR/bin/python" -c "$code" 2>/dev/null; then
+            print_success "$label verified in $VENV_DIR"
+        else
+            print_warning "$label NOT importable in $VENV_DIR - see $LOG_DIR/server-deps.log"
+        fi
+    done <<'PY_CHECKS'
+flask|import flask
+flask-cors|import flask_cors
+requests|import requests
+MCP SDK|import mcp
+python-toon|from toon import encode, decode
+PY_CHECKS
 fi
 
 ################################################################################
@@ -544,12 +704,16 @@ TOOLS=(
 INSTALLED=0
 FAILED=0
 
+# Print the resolved path, not just a tick: a tool found in an unexpected
+# directory is the difference between "installed" and "installed where the
+# server cannot see it".
 for tool in "${TOOLS[@]}"; do
-    if command_exists "$tool"; then
-        echo -e "${GREEN}✓${NC} $tool"
+    tool_path="$(command -v "$tool" 2>/dev/null)"
+    if [ -n "$tool_path" ]; then
+        printf '%b %-12s %s\n' "${GREEN}✓${NC}" "$tool" "$tool_path"
         ((INSTALLED++))
     else
-        echo -e "${RED}✗${NC} $tool"
+        printf '%b %-12s %s\n' "${RED}✗${NC}" "$tool" ""
         ((FAILED++))
     fi
 done
@@ -562,8 +726,21 @@ if [ $FAILED -gt 0 ]; then
     echo ""
     echo -e "${YELLOW}Failed tools:${NC}"
     for tool in "${TOOLS[@]}"; do
-        if ! command_exists "$tool"; then
-            echo "  - $tool"
+        if command_exists "$tool"; then
+            continue
+        fi
+        stray=""
+        for _dir in /usr/local/bin /usr/bin /snap/bin /root/.local/bin "$PIPX_BIN" \
+                    /root/go/bin "$GEM_BIN" "$NPM_BIN"; do
+            if [ -n "$_dir" ] && [ -x "$_dir/$tool" ]; then
+                stray="$_dir/$tool"
+                break
+            fi
+        done
+        if [ -n "$stray" ]; then
+            echo "  - $tool (installed at $stray but not on PATH - fix PATH, not the install)"
+        else
+            echo "  - $tool (see $LOG_DIR for its install log)"
         fi
     done
 fi
@@ -583,19 +760,22 @@ fi
 echo ""
 echo -e "${YELLOW}Next Steps:${NC}"
 echo "1. Copy .env.example to .env and configure your settings"
-echo "   ${BLUE}cp .env.example .env${NC}"
-echo "   ${BLUE}nano .env${NC}"
+echo -e "   ${BLUE}cp .env.example .env${NC}"
+echo -e "   ${BLUE}nano .env${NC}"
 echo ""
 echo "2. Start the SAST server:"
-echo "   ${BLUE}python3 sast_server.py --port 6000${NC}"
+echo -e "   ${BLUE}${VENV_DIR:-venv}/bin/python server/sast_server.py --port 6000${NC}"
 echo ""
 echo "3. Test the server:"
-echo "   ${BLUE}curl http://localhost:6000/health${NC}"
+echo -e "   ${BLUE}curl http://localhost:6000/health${NC}"
 echo ""
 echo -e "${YELLOW}Important Notes:${NC}"
+echo "- Install logs for this run: $LOG_DIR"
+echo "- /health lists fragile_tools: tools only reachable from the server venv"
+echo "- Where each scanner resolved from: scripts/check-tools.sh --versions"
 echo "- Some tools may require additional configuration"
-echo "- Snyk requires authentication: ${BLUE}snyk auth${NC}"
-echo "- WPScan API token recommended: ${BLUE}https://wpscan.com/api${NC}"
+echo -e "- Snyk requires authentication: ${BLUE}snyk auth${NC}"
+echo -e "- WPScan API token recommended: ${BLUE}https://wpscan.com/api${NC}"
 echo "- ClamAV virus definitions update automatically"
 echo ""
 if [ $FAILED -gt 0 ]; then
