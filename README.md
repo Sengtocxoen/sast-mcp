@@ -115,8 +115,13 @@ cd MCP-SAST-Server
 
 #### 2. Install Python Dependencies
 
+Kali refuses system-wide pip installs (PEP 668: "externally-managed-
+environment"), so install into a virtualenv. The server reads its own
+`venv/bin` even when started with another interpreter.
+
 ```bash
-pip install -r requirements.txt
+python3 -m venv venv
+venv/bin/python -m pip install -r requirements.txt
 ```
 
 #### 3. Configure Server (Optional)
@@ -328,7 +333,18 @@ The script will:
 
 **Installation takes 5-15 minutes depending on your internet speed.**
 
-**⚠ Having installation issues?** Common problems include stuck downloads, version conflicts, or network timeouts. Try running the script again or install tools manually.
+**⚠ Having installation issues?** Before reinstalling anything, find out
+whether the tool is actually missing:
+
+```bash
+scripts/check-tools.sh --versions
+```
+
+A tool can be installed and still be reported as failed, because gem, npm,
+go and pipx each install into a prefix that sudo's PATH does not list. The
+report says, per tool, whether it is on PATH, installed somewhere PATH
+misses, or genuinely absent. Per-tool install logs from the last run are in
+`/tmp/sast-install-logs`.
 
 ### Manual Installation
 
@@ -338,19 +354,34 @@ If you prefer to install tools manually:
 
 Many tools come pre-installed on Kali Linux. For missing tools:
 
-**Semgrep:**
+**Semgrep, Checkov, Safety** (one pipx venv each, so a rebuild of the
+server venv cannot delete them - run as yourself, not as root):
 ```bash
-pip3 install semgrep
+scripts/install-python-scanners.sh
 ```
 
 **Bandit:**
 ```bash
-pip3 install bandit
+sudo apt install -y bandit     # or: pipx install bandit
 ```
 
-**TruffleHog:**
+**Opengrep** (not on PyPI - `pip install opengrep` cannot work):
 ```bash
-pip3 install trufflehog
+TAG=$(curl -s https://api.github.com/repos/opengrep/opengrep/releases/latest \
+  | grep -o '"tag_name"[^,]*' | cut -d'"' -f4)
+sudo curl -fsSL -o /usr/local/bin/opengrep \
+  "https://github.com/opengrep/opengrep/releases/download/$TAG/opengrep_linux_x86"
+sudo chmod +x /usr/local/bin/opengrep
+```
+
+**TruffleHog** (the release asset carries the version in its filename; a
+URL without it 404s, and the PyPI `truffleHog` package is the abandoned v2):
+```bash
+TAG=$(curl -s https://api.github.com/repos/trufflesecurity/trufflehog/releases/latest \
+  | grep -o '"tag_name"[^,]*' | cut -d'"' -f4)
+curl -fsSL -o /tmp/th.tar.gz \
+  "https://github.com/trufflesecurity/trufflehog/releases/download/$TAG/trufflehog_${TAG#v}_linux_amd64.tar.gz"
+tar -xzf /tmp/th.tar.gz -C /tmp trufflehog && sudo install -m 755 /tmp/trufflehog /usr/local/bin/
 ```
 
 **Gitleaks:**
@@ -360,15 +391,9 @@ tar -xzf gitleaks_8.18.0_linux_x64.tar.gz
 sudo mv gitleaks /usr/local/bin/
 ```
 
-**Checkov:**
-```bash
-pip3 install checkov
-```
-
-**Safety:**
-```bash
-pip3 install safety
-```
+**Checkov and Safety:** installed by `scripts/install-python-scanners.sh`
+above. Do not pip-install them into the server venv: recreating that venv
+deletes them, and scans then report success with those engines absent.
 
 **Trivy:**
 ```bash
