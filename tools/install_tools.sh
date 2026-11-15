@@ -153,6 +153,32 @@ drop_root_symlink() {
     return 0
 }
 
+resolves_into_root() {
+    # True when the only copy of this tool that we can see lives under /root.
+    #
+    # This exists because dropping the symlink is not enough. Root's own PATH
+    # includes /root/go/bin, so after the symlink goes `command -v gosec` still
+    # succeeds, the install step below is skipped as "already installed", and
+    # no world-readable copy is ever created. The server user still cannot
+    # reach it. Treat that state as "needs installing", not as installed.
+    local path
+    path="$(command -v "$1" 2>/dev/null)"
+    [ -n "$path" ] || return 1
+    case "$(readlink -f "$path" 2>/dev/null)" in
+        /root/*) return 0 ;;
+    esac
+    return 1
+}
+
+needs_shared_install() {
+    # True when the tool is missing, or present only somewhere unreadable by
+    # the non-root user the server runs as.
+    if ! command_exists "$1"; then
+        return 0
+    fi
+    resolves_into_root "$1"
+}
+
 # Go-installed tools are the ones that used to be symlinked out of /root.
 for _tool in gosec gitleaks tfsec; do
     drop_root_symlink "$_tool"
@@ -309,9 +335,13 @@ fi
 
 # Gosec
 print_status "Installing Gosec..."
-if command_exists gosec; then
+if ! needs_shared_install gosec; then
     print_warning "Gosec already installed ($(command -v gosec))"
 else
+    if command_exists gosec; then
+        print_status "Gosec resolves to $(command -v gosec), under /root; \
+reinstalling into /usr/local/bin so the server user can run it"
+    fi
     run_logged gosec env $GO_INSTALL_ENV \
         go install github.com/securego/gosec/v2/cmd/gosec@latest || true
     if command_exists gosec; then
@@ -387,7 +417,7 @@ fi
 
 # Gitleaks
 print_status "Installing Gitleaks..."
-if ! command_exists gitleaks; then
+if needs_shared_install gitleaks; then
     # Try to get latest version, fallback to direct install
     GITLEAKS_VERSION=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest 2>/dev/null | grep -o '"tag_name": "v[^"]*"' | cut -d'"' -f4)
 
@@ -528,7 +558,7 @@ echo ""
 
 # tfsec
 print_status "Installing tfsec..."
-if command_exists tfsec; then
+if ! needs_shared_install tfsec; then
     print_warning "tfsec already installed ($(command -v tfsec))"
 else
     # The upstream installer ends by printing "Current tfsec version: v1.28.14".
