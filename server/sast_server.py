@@ -56,7 +56,12 @@ app = Flask(__name__)
 # from the browser. Required for future direct API integration.
 origins = [o.strip() for o in CORS_ORIGINS.split(",") if o.strip()]
 CORS(app, origins=origins, supports_credentials=False)
-register_all(app)
+# A multiprocessing child started with spawn or forkserver re-imports this file
+# as "__mp_main__". Registering routes there would pull in core a second time
+# and try to start another Manager inside a half-built process, which
+# multiprocessing rejects, so only the real server process wires up the app.
+if __name__ != "__mp_main__":
+    register_all(app)
 
 
 def parse_args():

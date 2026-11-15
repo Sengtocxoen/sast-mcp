@@ -98,10 +98,10 @@ def _tool_functional(tool: str, check_cmd: str) -> Dict[str, Any]:
 from config import (  # noqa: E402
     DEPENDENCY_CHECK_PATH,
     FORCE_SYNC_SCANS,
-    USE_MULTIPROCESSING,
     MAX_PARALLEL_SCANS,
     MAX_PROCESS_WORKERS,
 )
+from core import MULTIPROCESSING_ACTIVE  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -219,10 +219,10 @@ def register(app: Flask) -> None:
                 "auto_discovered": _pm["auto_discovered"],
                 "detail_url": "/api/util/mounts",
             },
-            "multiprocessing_enabled": USE_MULTIPROCESSING,
+            "multiprocessing_enabled": MULTIPROCESSING_ACTIVE,
             "max_parallel_scans": MAX_PARALLEL_SCANS,
             "max_process_workers": (
-                MAX_PROCESS_WORKERS if USE_MULTIPROCESSING else "N/A"
+                MAX_PROCESS_WORKERS if MULTIPROCESSING_ACTIVE else "N/A"
             ),
             "version": "3.1.0",
         })

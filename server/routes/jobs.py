@@ -17,11 +17,11 @@ from core import (
     check_process_health,
     scan_stats_lock,
     scan_stats,
+    MULTIPROCESSING_ACTIVE,
 )
 from config import (
     MAX_PAGE_SIZE,
     DEFAULT_PAGE_SIZE,
-    USE_MULTIPROCESSING,
     MAX_PARALLEL_SCANS,
     MAX_PROCESS_WORKERS,
     MAX_RETRY_ATTEMPTS,
@@ -307,10 +307,10 @@ def register(app: Flask) -> None:
                 },
                 "process_health": process_health,
                 "system_info": {
-                    "multiprocessing_enabled": USE_MULTIPROCESSING,
+                    "multiprocessing_enabled": MULTIPROCESSING_ACTIVE,
                     "max_parallel_scans": MAX_PARALLEL_SCANS,
                     "max_process_workers": (
-                        MAX_PROCESS_WORKERS if USE_MULTIPROCESSING else "N/A"
+                        MAX_PROCESS_WORKERS if MULTIPROCESSING_ACTIVE else "N/A"
                     ),
                     "max_retry_attempts": MAX_RETRY_ATTEMPTS,
                     "cpu_count": cpu_count,
