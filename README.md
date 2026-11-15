@@ -365,14 +365,11 @@ scripts/install-python-scanners.sh
 sudo apt install -y bandit     # or: pipx install bandit
 ```
 
-**Opengrep** (not on PyPI - `pip install opengrep` cannot work):
-```bash
-TAG=$(curl -s https://api.github.com/repos/opengrep/opengrep/releases/latest \
-  | grep -o '"tag_name"[^,]*' | cut -d'"' -f4)
-sudo curl -fsSL -o /usr/local/bin/opengrep \
-  "https://github.com/opengrep/opengrep/releases/download/$TAG/opengrep_linux_x86"
-sudo chmod +x /usr/local/bin/opengrep
-```
+**Opengrep:** not installed, on purpose. `pip install opengrep` cannot work
+(it is not on PyPI), and installing the binary is not neutral:
+`core.resolve_grep_engine()` prefers `opengrep` over `semgrep`, so it would
+switch the engine behind every semgrep and repo-scan run, including the
+weekly sweep. `health.py` already counts semgrep as satisfying this slot.
 
 **TruffleHog** (the release asset carries the version in its filename; a
 URL without it 404s, and the PyPI `truffleHog` package is the abandoned v2):

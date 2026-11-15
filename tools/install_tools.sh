@@ -121,10 +121,24 @@ github_latest_tag() {
 }
 
 case "$(uname -m)" in
-    x86_64|amd64)  REL_ARCH="amd64"; OPENGREP_ASSET="opengrep_linux_x86" ;;
-    aarch64|arm64) REL_ARCH="arm64"; OPENGREP_ASSET="opengrep_linux_aarch64" ;;
-    *)             REL_ARCH="";      OPENGREP_ASSET="" ;;
+    x86_64|amd64)  REL_ARCH="amd64" ;;
+    aarch64|arm64) REL_ARCH="arm64" ;;
+    *)             REL_ARCH="" ;;
 esac
+
+tool_satisfied() {
+    # True when the tool, or an accepted stand-in, is runnable. The only
+    # stand-in is the one the server itself already accepts:
+    # server/routes/health.py maps "opengrep" to ("semgrep",), because the two
+    # share one CLI and opengrep_scan runs whichever is installed.
+    if command_exists "$1"; then
+        return 0
+    fi
+    case "$1" in
+        opengrep) command_exists semgrep ;;
+        *) return 1 ;;
+    esac
+}
 
 ################################################################################
 # SYSTEM UPDATE
@@ -183,32 +197,25 @@ echo ""
 
 # Opengrep
 #
-# Opengrep is not published on PyPI (pypi.org/pypi/opengrep/json returns 404),
-# so the old `pip install opengrep` could never have worked. On Kali it failed
-# twice over, because PEP 668 refuses system-wide pip installs. The release
-# binary is the supported install path.
-print_status "Installing Opengrep..."
-if command_exists opengrep; then
-    print_warning "Opengrep already installed ($(command -v opengrep))"
-elif [ -z "$OPENGREP_ASSET" ]; then
-    print_warning "Opengrep: no release binary for $(uname -m), skipping"
-else
-    OPENGREP_TAG="$(github_latest_tag opengrep/opengrep)"
-    OPENGREP_TAG="${OPENGREP_TAG:-v2.0.0}"
-    if curl -fsSL --max-time 300 -o /usr/local/bin/opengrep.new \
-        "https://github.com/opengrep/opengrep/releases/download/${OPENGREP_TAG}/${OPENGREP_ASSET}"; then
-        chmod +x /usr/local/bin/opengrep.new
-        mv /usr/local/bin/opengrep.new /usr/local/bin/opengrep
-    else
-        rm -f /usr/local/bin/opengrep.new
-    fi
-    if command_exists opengrep && opengrep --version >/dev/null 2>&1; then
-        print_success "Opengrep ${OPENGREP_TAG} installed ($(command -v opengrep))"
-    else
-        rm -f /usr/local/bin/opengrep
-        print_warning "Opengrep install failed (tag=${OPENGREP_TAG} asset=${OPENGREP_ASSET})"
-    fi
-fi
+# Deliberately NOT installed here. Two separate reasons:
+#
+# 1. What this step used to run, `pip install opengrep`, cannot work at all:
+#    opengrep is not published on PyPI (pypi.org/pypi/opengrep/json returns
+#    404), and PEP 668 blocks system-wide pip installs on Kali regardless. It
+#    installed nothing and printed success.
+# 2. Installing the real binary is not a neutral act. core.resolve_grep_engine()
+#    prefers `opengrep` over `semgrep`, so dropping the binary onto PATH
+#    switches the engine behind every /api/sast/semgrep and /api/repo-scan run,
+#    including the weekly sweep - whose rule packs (p/python, p/security-audit)
+#    and finding baselines all come from semgrep 1.185.0. Swapping engines is
+#    its own change, with its own verification. It is not a side effect an
+#    install script should have.
+#
+# server/routes/health.py already treats the two as interchangeable
+# ("opengrep": ("semgrep",)) and opengrep_scan runs whichever binary is
+# present, so semgrep satisfies this slot. The verification at the end of this
+# script reports it that way instead of counting a phantom failure.
+print_status "Opengrep: skipped on purpose; semgrep covers this engine slot"
 
 # Bandit
 print_status "Installing Bandit..."
@@ -712,6 +719,10 @@ for tool in "${TOOLS[@]}"; do
     if [ -n "$tool_path" ]; then
         printf '%b %-12s %s\n' "${GREEN}✓${NC}" "$tool" "$tool_path"
         ((INSTALLED++))
+    elif tool_satisfied "$tool"; then
+        printf '%b %-12s %s\n' "${GREEN}✓${NC}" "$tool" \
+            "satisfied by semgrep ($(command -v semgrep))"
+        ((INSTALLED++))
     else
         printf '%b %-12s %s\n' "${RED}✗${NC}" "$tool" ""
         ((FAILED++))
@@ -726,7 +737,7 @@ if [ $FAILED -gt 0 ]; then
     echo ""
     echo -e "${YELLOW}Failed tools:${NC}"
     for tool in "${TOOLS[@]}"; do
-        if command_exists "$tool"; then
+        if tool_satisfied "$tool"; then
             continue
         fi
         stray=""
