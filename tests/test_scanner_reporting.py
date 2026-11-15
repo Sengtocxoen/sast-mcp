@@ -32,6 +32,7 @@ flask = pytest.importorskip("flask", reason="flask not installed")
 import core  # noqa: E402
 from routes import sast as sast_routes  # noqa: E402
 from routes import secrets as secrets_routes  # noqa: E402
+from tools import ai_analysis  # noqa: E402
 
 
 # -- scan_trustworthy: a failure must never read as clean ------------------
@@ -340,3 +341,53 @@ def test_unproven_still_wins_over_a_reconciled_count():
     assert out["scan_proven"] is False
     assert a["risk"]["overall_risk"] == "UNKNOWN"
     assert a["unproven"] is True
+
+
+# -- _extract_findings: a parsed result must not be dropped ----------------
+
+_TFSEC_RESULT = {
+    "parsed_output": {
+        "results": [
+            {
+                "long_id": "aws-ec2-no-public-ingress-sgr",
+                "rule_id": "AVD-AWS-0107",
+                "severity": "CRITICAL",
+                "description": "Security group rule allows ingress from the internet.",
+                "location": {"filename": "/mnt/x/sg.tf", "start_line": 42},
+                "resource": "aws_security_group_rule.open",
+            }
+        ]
+    }
+}
+
+
+def test_tfsec_findings_are_extracted():
+    """tfsec had no branch here, so a repo with tfsec findings read as 0."""
+    out = ai_analysis._extract_findings(_TFSEC_RESULT, "tfsec")
+    assert len(out) == 1
+    f = out[0]
+    assert f["id"] == "aws-ec2-no-public-ingress-sgr"
+    assert f["severity"] == "CRITICAL"
+    assert f["file"] == "/mnt/x/sg.tf"
+    assert f["line"] == 42
+    assert f["resource"] == "aws_security_group_rule.open"
+    assert "ingress from the internet" in f["message"]
+
+
+def test_tfsec_falls_back_to_rule_id_when_long_id_is_absent():
+    data = {"parsed_output": {"results": [{"rule_id": "AVD-AWS-0107", "severity": "HIGH"}]}}
+    out = ai_analysis._extract_findings(data, "tfsec")
+    assert out[0]["id"] == "AVD-AWS-0107"
+    assert out[0]["line"] == 0
+    assert out[0]["file"] == ""
+
+
+def test_tfsec_empty_results_stay_empty():
+    out = ai_analysis._extract_findings({"parsed_output": {"results": []}}, "tfsec")
+    assert out == []
+
+
+def test_tfsec_null_results_do_not_raise():
+    """tfsec writes results: null for a clean run, which is not iterable."""
+    out = ai_analysis._extract_findings({"parsed_output": {"results": None}}, "tfsec")
+    assert out == []

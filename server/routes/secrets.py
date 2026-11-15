@@ -4,7 +4,6 @@ import logging
 import os
 import tempfile
 import traceback
-from typing import Any, Dict
 
 from flask import Flask, request, jsonify
 
@@ -37,7 +36,7 @@ def register(app: Flask) -> None:
             result["resolved_path"] = resolved
             if json_output and result.get("stdout"):
                 try:
-                    result["parsed_secrets"] = [json.loads(l) for l in result["stdout"].strip().split("\n") if l.strip()]
+                    result["parsed_secrets"] = [json.loads(line) for line in result["stdout"].strip().split("\n") if line.strip()]
                 except Exception:
                     pass
             return jsonify(response_as_toon("trufflehog", params, result))

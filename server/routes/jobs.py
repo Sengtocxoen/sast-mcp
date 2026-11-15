@@ -207,7 +207,7 @@ def register(app: Flask) -> None:
                     )
 
                     offset = (page - 1) * page_size
-                    page_findings = all_findings[offset : offset + page_size]
+                    page_findings = all_findings[offset: offset + page_size]
                     toon_analysis["findings"] = page_findings
                     toon_analysis["findings_truncated"] = page < total_pages
 

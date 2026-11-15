@@ -28,11 +28,11 @@ from core import ENHANCED_ENV, _probe_memory_limiter
 logger = logging.getLogger(__name__)
 
 # ---- tunables (env-overridable) -------------------------------------------
-SHARD_MIN_FILES    = int(os.environ.get("GREP_SHARD_MIN_FILES", 350))
+SHARD_MIN_FILES = int(os.environ.get("GREP_SHARD_MIN_FILES", 350))
 SHARD_TARGET_BYTES = int(os.environ.get("GREP_SHARD_TARGET_BYTES", 2_500_000))
-SHARD_MEM_MB       = int(os.environ.get("GREP_SHARD_MEM_MB", 1024))
-MAX_CONCURRENCY    = int(os.environ.get("GREP_MAX_CONCURRENCY", 0))  # 0 = auto
-BINS_PER_WORKER    = int(os.environ.get("GREP_BINS_PER_WORKER", 6))
+SHARD_MEM_MB = int(os.environ.get("GREP_SHARD_MEM_MB", 1024))
+MAX_CONCURRENCY = int(os.environ.get("GREP_MAX_CONCURRENCY", 0))  # 0 = auto
+BINS_PER_WORKER = int(os.environ.get("GREP_BINS_PER_WORKER", 6))
 
 _SKIP_DIRS = {".git", ".svn", ".hg", "node_modules", "vendor", "dist", "build",
               "testdata", "third_party", ".venv", "venv", "__pycache__"}

@@ -29,7 +29,6 @@ LICENSE: MIT
 ================================================================================
 """
 
-import json
 import logging
 import os
 from typing import Dict, Any, Optional, List
@@ -526,6 +525,20 @@ def _extract_findings(scan_data: Dict[str, Any], tool_name: str) -> List[Dict[st
                 "severity": r.get("severity", "MEDIUM"),
                 "message": r.get("check_name", "")[:500],
                 "file": r.get("file_path", ""),
+                "resource": r.get("resource", ""),
+            })
+
+    elif tool_name == "tfsec":
+        # tfsec JSON: {"results":[{long_id/rule_id, severity, description,
+        #   location:{filename,start_line}, resource, resolution}]}
+        for r in parsed_output.get("results", []) or []:
+            loc = r.get("location", {}) or {}
+            findings.append({
+                "id": r.get("long_id", r.get("rule_id", "unknown")),
+                "severity": r.get("severity", "UNKNOWN"),
+                "message": (r.get("description") or r.get("rule_description") or "")[:500],
+                "file": loc.get("filename", ""),
+                "line": loc.get("start_line", 0),
                 "resource": r.get("resource", ""),
             })
 

@@ -19,8 +19,8 @@ sys.path.insert(0, _project_root)
 sys.path.insert(0, _server_dir)
 os.chdir(_project_root)
 
-from flask import Flask
-from flask_cors import CORS
+from flask import Flask  # noqa: E402
+from flask_cors import CORS  # noqa: E402
 
 # Import config/routes; fallback to direct load if path still wrong (e.g. some Linux envs).
 try:

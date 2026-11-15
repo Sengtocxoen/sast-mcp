@@ -245,7 +245,7 @@ def register(app: Flask) -> None:
             max_depth = 10 if deep_scan else 1
 
             for root, dirs, files in os.walk(resolved_path):
-                depth = root[len(resolved_path) :].count(os.sep)
+                depth = root[len(resolved_path):].count(os.sep)
                 if depth >= max_depth:
                     dirs[:] = []
                     continue
