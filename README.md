@@ -400,6 +400,57 @@ sudo apt update
 sudo apt install trivy
 ```
 
+### OWASP Dependency-Check: the NVD cache
+
+Dependency-Check is the one tool that needs setup after installation. It
+matches your dependencies against a local copy of the NVD, and two things
+decide whether it works at all.
+
+**1. An API key.** `dependencycheck.properties` ships
+`nvd.api.requestsperthirtysecondswithoutapikey=5` against
+`nvd.api.requestsperthirtysecondswithapikey=50`. Without a key the first cache
+build crawls for hours. Request one at
+<https://nvd.nist.gov/developers/request-an-api-key>, then put it in `.env`:
+
+```bash
+echo 'NVD_API_KEY=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx' >> .env
+```
+
+`.env` is gitignored. The key is read from there, written to a 0600 property
+file and passed with `-P`. It never appears in a command line, because argv is
+readable through `/proc/<pid>/cmdline` by every local account, and because this
+server copies the command into every scan result and log line.
+
+**2. A writable cache directory.** The shipped default is `[JAR]/data`, inside
+root-owned `/opt/dependency-check`, which the server user cannot create, so
+every scan fails before it starts. `DEPENDENCY_CHECK_DATA_DIR` defaults to
+`/var/sast-mcp/depcheck-data` instead.
+
+Build the cache once, as the user the server runs as:
+
+```bash
+scripts/warm-nvd-cache.sh
+```
+
+Expect 10-30 minutes. It is safe to interrupt and re-run, and it skips a cache
+less than 24 hours old unless you pass `--force`. Scans then run with
+`--noupdate` and read the cache without touching the network.
+
+Confirm the server agrees:
+
+```bash
+curl -s localhost:6000/health | python3 -m json.tool | grep -A8 dependency_check
+```
+
+`/health` reports `nvd_api_key_configured`, `data_dir_writable` and
+`nvd_cache_present`, and lists `blockers` when any of them is missing. It never
+reports the key itself.
+
+In a fleet scan, Dependency-Check runs only on Maven and Gradle repos, where it
+is strongest. Set `DEPENDENCY_CHECK_ALL_ECOSYSTEMS=1` to include npm and Python
+repos as well; it costs minutes per repo across the estate, and npm audit,
+safety, pip-audit and trivy already cover those ecosystems.
+
 ### Installing Kali Linux Tools
 
 Most Kali tools come pre-installed on Kali Linux. For missing tools:

@@ -41,6 +41,8 @@ import staging
 import tool_registry
 from config import (
     ALLOWED_MOUNTS,
+    DEPENDENCY_CHECK_ALL_ECOSYSTEMS,
+    DEPENDENCY_CHECK_DATA_DIR,
     MOUNT_POINT,
     REPO_SCAN_CPU_BUDGET,
     REPO_SCAN_TOOL_CONCURRENCY,
@@ -880,13 +882,25 @@ def _build_plan(ctx: Dict[str, Any], dest: str, out_dir: str,
                 add("npm-audit",
                     f"cd {q(npm_dir)} && npm audit --json > {q(rep('npm-audit'))} 2>/dev/null || true",
                     rep("npm-audit"), _FAST_TIMEOUT)
-        if has("pom.xml", "build.gradle", "build.gradle.kts") and have("dependency-check"):
+        _dc_markers = ["pom.xml", "build.gradle", "build.gradle.kts"]
+        if DEPENDENCY_CHECK_ALL_ECOSYSTEMS:
+            # Opt-in: npm and Python repos as well. Off by default because it
+            # costs minutes per repo across the estate, and npm audit, safety,
+            # pip-audit and trivy already cover those ecosystems.
+            _dc_markers += ["package-lock.json", "yarn.lock", "requirements.txt",
+                            "poetry.lock", "Pipfile.lock"]
+        if has(*_dc_markers) and have("dependency-check"):
             dc = binary("dependency-check")
             # --noupdate: the NVD feed refresh takes minutes and dominates the
-            # scan; trivy/osv already cover freshness across the fleet.
+            # scan; trivy/osv already cover freshness across the fleet. That
+            # makes --data mandatory rather than optional: with no writable
+            # cache to read, every run here fails. The default cache path lives
+            # in root-owned /opt/dependency-check, which the server user cannot
+            # create. Build the cache once with scripts/warm-nvd-cache.sh.
             add("dependency-check",
                 f"{dc} --scan {q(dest)} --format JSON --out {q(out_dir)} "
-                f"--noupdate --disableAssembly --prettyPrint || true",
+                f"--data {q(DEPENDENCY_CHECK_DATA_DIR)} "
+                f"--noupdate --disableAssembly --disableVersionCheck --prettyPrint || true",
                 os.path.join(out_dir, "dependency-check-report.json"),
                 _SEMGREP_TIMEOUT, weight=2)
         if have("snyk") and want.get("snyk", False):

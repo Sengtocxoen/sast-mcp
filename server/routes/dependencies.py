@@ -2,16 +2,57 @@
 import json
 import logging
 import os
+import shlex
 import shutil
 import tempfile
 import traceback
 
 from flask import Flask, request, jsonify
 
-from config import DEPENDENCY_CHECK_PATH, DEPENDENCY_CHECK_TIMEOUT
+from config import (
+    DEPENDENCY_CHECK_DATA_DIR,
+    DEPENDENCY_CHECK_PATH,
+    DEPENDENCY_CHECK_TIMEOUT,
+    NVD_API_KEY,
+)
 from core import execute_command, resolve_windows_path, response_as_toon
 
 logger = logging.getLogger(__name__)
+
+
+def _write_nvd_property_file(api_key: str) -> str:
+    """Put the NVD API key in a private property file and return its path.
+
+    dependency-check accepts the key either as `--nvdApiKey <key>` or as
+    `nvd.api.key` in a property file passed with -P. Only the second is safe:
+
+    * argv is world-readable through /proc/<pid>/cmdline, so any local account
+      could read the key for as long as a scan runs, and scans run for minutes.
+    * CommandExecutor copies the command into every result it returns and into
+      the logs. core.redact_command() now masks a key passed that way, but not
+      putting it there is the better answer.
+
+    The caller deletes the file when the scan finishes.
+    """
+    fd, path = tempfile.mkstemp(prefix="dc-nvd-", suffix=".properties")
+    with os.fdopen(fd, "w") as handle:
+        handle.write("nvd.api.key=%s\n" % api_key)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:  # pragma: no cover - Windows has no POSIX modes
+        pass
+    return path
+
+
+def _nvd_cache_present(data_dir: str) -> bool:
+    """True when the NVD cache directory holds at least one file."""
+    try:
+        return any(
+            os.path.isfile(os.path.join(data_dir, name))
+            for name in os.listdir(data_dir)
+        )
+    except OSError:
+        return False
 
 
 def register(app: Flask) -> None:
@@ -107,23 +148,87 @@ def register(app: Flask) -> None:
 
     @app.route("/api/dependencies/dependency-check", methods=["POST"])
     def dependency_check():
+        """OWASP Dependency-Check.
+
+        Two things must be right before this tool can run at all, and both were
+        wrong on the Kali box:
+
+        1. The NVD cache location. The shipped default is `[JAR]/data`, inside
+           root-owned /opt/dependency-check, while the server runs as a normal
+           user, so building the H2 database fails. DEPENDENCY_CHECK_DATA_DIR
+           puts it somewhere writable, and the directory is created here.
+        2. The NVD API key. Unauthenticated clients get 5 requests per 30
+           seconds against 50 with a key, so the first cache build is the
+           difference between minutes and hours. It comes from NVD_API_KEY in
+           the environment or .env, and goes to the tool in a 0600 property
+           file - never in argv.
+
+        An empty NVD cache with no key is reported as an error rather than
+        attempted: the run would take hours and a caller waiting on a timeout
+        cannot tell that from a clean result.
+        """
+        prop_file = ""
+        output_dir = ""
         try:
             params = request.json or {}
             target = params.get("target", ".")
             project_name = params.get("project_name", "project")
             output_format = params.get("format", "JSON")
             scan = params.get("scan", target)
-            nvd_api_key = params.get("nvd_api_key", "")
+            # A request may still carry its own key; the configured one is the
+            # normal path, so callers never have to send a secret over the wire.
+            nvd_api_key = params.get("nvd_api_key", "") or NVD_API_KEY
+            data_dir = params.get("data_dir", "") or DEPENDENCY_CHECK_DATA_DIR
             noupdate = params.get("noupdate", False)
             pretty_print = params.get("pretty_print", False)
             additional_args = params.get("additional_args", "")
             resolved_target = resolve_windows_path(target)
             scan_paths = [resolve_windows_path(p.strip()) for p in str(scan).split(",") if p.strip()]
+
+            try:
+                os.makedirs(data_dir, exist_ok=True)
+            except OSError as ex:
+                return jsonify({
+                    "error": f"NVD cache dir {data_dir} is unusable: {ex}",
+                    "hint": "Set DEPENDENCY_CHECK_DATA_DIR to a path the server user can write.",
+                }), 500
+
+            cache_ready = _nvd_cache_present(data_dir)
+            if not cache_ready:
+                # Either branch means this scan cannot produce a usable answer.
+                # Saying so beats a run that blocks until the caller's timeout,
+                # which is indistinguishable from a clean result.
+                if noupdate:
+                    return jsonify({
+                        "error": (
+                            f"NVD cache at {data_dir} is empty and noupdate was requested, "
+                            "so there are no advisories to match against."
+                        ),
+                        "hint": "Build the cache once with scripts/warm-nvd-cache.sh.",
+                    }), 503
+                if not nvd_api_key:
+                    return jsonify({
+                        "error": (
+                            f"NVD cache at {data_dir} is empty and no NVD API key is configured. "
+                            "Dependency-Check would spend hours at 5 requests per 30 seconds."
+                        ),
+                        "hint": (
+                            "Set NVD_API_KEY in .env, then run scripts/warm-nvd-cache.sh once."
+                        ),
+                    }), 503
+
             output_dir = tempfile.mkdtemp()
-            scan_flags = " ".join(f"-s {p}" for p in scan_paths)
-            command = f"{DEPENDENCY_CHECK_PATH} --project {project_name} {scan_flags} -f {output_format} -o {output_dir}"
+            scan_flags = " ".join(f"-s {shlex.quote(p)}" for p in scan_paths)
+            # project_name reaches us from a request body and lands in a shell
+            # command, so quote it.
+            command = (
+                f"{DEPENDENCY_CHECK_PATH} --project {shlex.quote(str(project_name))} "
+                f"{scan_flags} -f {shlex.quote(str(output_format))} -o {shlex.quote(output_dir)} "
+                f"--data {shlex.quote(data_dir)} --disableVersionCheck"
+            )
             if nvd_api_key:
-                command += f" --nvdApiKey {nvd_api_key}"
+                prop_file = _write_nvd_property_file(nvd_api_key)
+                command += f" -P {shlex.quote(prop_file)}"
             if noupdate:
                 command += " -n"
             if pretty_print:
@@ -148,6 +253,11 @@ def register(app: Flask) -> None:
                     shutil.rmtree(output_dir)
                 except Exception:
                     pass
+                if prop_file:
+                    try:
+                        os.remove(prop_file)
+                    except OSError:
+                        pass
             return jsonify(response_as_toon("dependency-check", params, result))
         except Exception as e:
             logger.error(f"dependency_check: {e}\n{traceback.format_exc()}")

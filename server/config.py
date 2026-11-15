@@ -62,6 +62,33 @@ def _resolve_dependency_check() -> str:
 
 DEPENDENCY_CHECK_PATH = _resolve_dependency_check()
 
+# Where Dependency-Check keeps its NVD cache (an H2 database).
+#
+# The shipped default is `[JAR]/data`, i.e. inside /opt/dependency-check, which
+# is root-owned while this server runs as a normal user. Every scan would fail
+# creating the database, so the cache goes somewhere the server can write -
+# next to the scan results it already owns.
+DEPENDENCY_CHECK_DATA_DIR = os.environ.get(
+    "DEPENDENCY_CHECK_DATA_DIR", "/var/sast-mcp/depcheck-data"
+)
+
+# NVD API key, read from the environment or .env - never committed, and never
+# passed on a command line (see routes/dependencies.py for why).
+#
+# The key is what makes this tool usable: dependencycheck.properties ships
+# nvd.api.requestsperthirtysecondswithoutapikey=5 against
+# nvd.api.requestsperthirtysecondswithapikey=50, so an unauthenticated first
+# cache build crawls for hours.
+NVD_API_KEY = os.environ.get("NVD_API_KEY", "").strip()
+
+# Dependency-Check in a fleet scan normally runs only on Maven/Gradle repos,
+# where it is strongest. Set to 1 to also run it on npm and Python repos, which
+# adds minutes per repo across the whole estate - npm audit, safety, pip-audit
+# and trivy already cover those ecosystems.
+DEPENDENCY_CHECK_ALL_ECOSYSTEMS = os.environ.get(
+    "DEPENDENCY_CHECK_ALL_ECOSYSTEMS", "0"
+).lower() in ("1", "true", "yes", "y")
+
 # Path resolution (Windows client -> Linux server)
 MOUNT_POINT = os.environ.get("MOUNT_POINT", "/mnt/work")
 WINDOWS_BASE = os.environ.get("WINDOWS_BASE", "F:/work")
