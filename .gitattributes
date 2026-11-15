@@ -1,0 +1,7 @@
+# Shell scripts must be LF everywhere. These are checked out on Windows (where
+# core.autocrlf=true would otherwise give them CRLF) and run on the Kali host,
+# where a CR at the end of the shebang fails with:
+#   /usr/bin/env: 'bash\r': No such file or directory
+# Scoped to *.sh on purpose: the Python sources are CRLF in the working tree and
+# a blanket `* text=auto` would renormalise the whole repository in one commit.
+*.sh text eol=lf

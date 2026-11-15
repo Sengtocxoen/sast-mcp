@@ -64,7 +64,9 @@ print_success "System packages updated"
 ################################################################################
 
 print_status "Installing Python and pip..."
-apt install -y python3 python3-pip python3-venv >/dev/null 2>&1
+# pipx is required for the Python-based scanners: it gives each one its own
+# venv, so they survive a rebuild of the server's virtualenv.
+apt install -y python3 python3-pip python3-venv pipx >/dev/null 2>&1
 print_success "Python and pip installed"
 
 ################################################################################
@@ -264,13 +266,25 @@ echo ""
 echo -e "${BLUE}Installing Dependency Scanning Tools...${NC}"
 echo ""
 
-# Safety
-print_status "Installing Safety..."
-if ! command_exists safety; then
-    pip3 install safety >/dev/null 2>&1
-    print_success "Safety installed"
+# Python-based scanners: semgrep, checkov, safety.
+#
+# These used to be installed here with a bare `pip3 install`, which puts them
+# wherever the active interpreter points. When that was the server's own venv,
+# recreating it for Python 3.14 deleted all three at once: /health reported them
+# missing and scans kept returning success with those engines simply absent.
+#
+# scripts/install-python-scanners.sh is the single definition of how they are
+# installed (pipx, one venv each). Run it as the invoking user, not root, so the
+# binaries land in that user's ~/.local/bin where the server can execute them.
+print_status "Installing Python scanners (semgrep, checkov, safety) via pipx..."
+_SCANNERS_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/scripts/install-python-scanners.sh"
+_SCANNER_USER="${SUDO_USER:-$USER}"
+if [ ! -f "$_SCANNERS_SH" ]; then
+    print_warning "Missing $_SCANNERS_SH - skipping Python scanners"
+elif sudo -u "$_SCANNER_USER" bash "$_SCANNERS_SH"; then
+    print_success "Python scanners installed for $_SCANNER_USER"
 else
-    print_warning "Safety already installed"
+    print_warning "Python scanner install reported a problem - see output above"
 fi
 
 # npm audit (comes with npm)
@@ -331,14 +345,10 @@ echo ""
 echo -e "${BLUE}Installing IaC Security Tools...${NC}"
 echo ""
 
-# Checkov
-print_status "Installing Checkov..."
-if ! command_exists checkov; then
-    pip3 install checkov >/dev/null 2>&1
-    print_success "Checkov installed"
-else
-    print_warning "Checkov already installed"
-fi
+# Checkov is installed with semgrep and safety by
+# scripts/install-python-scanners.sh, in the "Dependency Scanning Tools" section
+# above. Do not add a `pip3 install checkov` back here: that is what tied it to
+# the server venv and lost it on the Python 3.14 rebuild.
 
 # tfsec
 print_status "Installing tfsec..."
@@ -508,6 +518,7 @@ echo ""
 
 TOOLS=(
     "opengrep"
+    "semgrep"
     "bandit"
     "bearer"
     "graudit"

@@ -28,9 +28,15 @@ psutil==5.9.8
 # ============================================================================
 
 # ============================================================================
-# Optional Python-based SAST tools (uncomment to install via pip)
-# Most tools are installed separately via apt/npm/go.
+# Python-based SAST tools: do NOT install them here.
+#
+# Installing a scanner into this venv ties its lifetime to the venv. Recreating
+# the venv for Python 3.14 deleted semgrep, checkov and safety exactly that way:
+# /health reported them missing and scans kept succeeding with those engines
+# absent. Most other tools come from apt/npm/go and were unaffected.
+#
+# Install them with pipx instead, which gives each tool its own venv:
+#     scripts/install-python-scanners.sh
+#
+# /health lists anything still installed in this venv under "fragile_tools".
 # ============================================================================
-# bandit==1.7.8
-# safety==3.2.0
-# checkov==3.2.0

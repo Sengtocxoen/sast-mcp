@@ -19,8 +19,6 @@ import uuid
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from datetime import datetime
 from enum import Enum
-from pathlib import Path
-from multiprocessing import Manager
 from typing import Any, Dict, List, Optional, Tuple
 
 import psutil
@@ -473,6 +471,15 @@ def save_scan_output_to_file(output_file: str, stdout_data: str, format_type: st
         return {"file_saved": False, "error": str(e)}
 
 
+# <repo>/server/core.py -> <repo>/venv/bin. Module level so /health can report
+# which scanners resolve from the project venv: anything installed there is
+# deleted by a venv rebuild, which is how semgrep/checkov/safety silently
+# vanished when the venv was recreated for Python 3.14.
+PROJECT_VENV_BIN = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "venv", "bin"
+)
+
+
 def get_enhanced_env() -> Dict[str, str]:
     env = os.environ.copy()
     # The bin dir of the running interpreter. When the server is started via
@@ -489,9 +496,7 @@ def get_enhanced_env() -> Dict[str, str]:
     # launched with a different interpreter (e.g. `sudo python3 ...` or system
     # python), which is exactly the case where semgrep/trufflehog installed only
     # in the venv would otherwise be invisible to both scans and health.
-    project_venv_bin = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "venv", "bin"
-    )
+    project_venv_bin = PROJECT_VENV_BIN
     extra = [
         interpreter_bin, venv_bin, project_venv_bin,
         "/root/.local/bin", os.path.expanduser("~/.local/bin"),
