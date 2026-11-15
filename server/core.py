@@ -18,7 +18,6 @@ import uuid
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from datetime import datetime
 from enum import Enum
-from multiprocessing import Manager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -88,11 +87,40 @@ _current_job_local = threading.local()
 # ---------------------------------------------------------------------------
 # Multiprocess / threading state
 # ---------------------------------------------------------------------------
-mp_manager = Manager() if USE_MULTIPROCESSING else None
+# Python 3.14 made "forkserver" the default start method on Linux; it was "fork"
+# up to 3.13. forkserver and spawn both re-import the main module in the child,
+# and this server builds its Flask app and registers every route at import time,
+# so that re-import runs this module again and calls Manager() a second time in
+# a child that is still bootstrapping. multiprocessing refuses that with
+# "An attempt has been made to start a new process before the current process
+# has finished its bootstrapping phase", the child dies, and the parent fails
+# with EOFError or ConnectionResetError while waiting for it - the server never
+# finishes booting. A "fork" child inherits the parent instead of re-importing,
+# which is what this module has always relied on, so ask for that context by
+# name rather than taking the platform default. Where fork is missing (Windows)
+# or refused, fall back to threading primitives and keep serving.
+mp_manager = None
+_mp_ctx = None
 if USE_MULTIPROCESSING:
     import multiprocessing
-    scan_semaphore = multiprocessing.Semaphore(MAX_PARALLEL_SCANS)
-    scan_stats_lock = multiprocessing.Lock()
+    try:
+        _mp_ctx = multiprocessing.get_context("fork")
+        mp_manager = _mp_ctx.Manager()
+    except (ValueError, OSError, RuntimeError) as exc:
+        _mp_ctx = None
+        logger.warning(
+            "multiprocessing: 'fork' start method unavailable (%s); "
+            "keeping scan state on threads", exc,
+        )
+
+# True only when process-shared state is really in use. The job executor and the
+# health endpoints read this, not USE_MULTIPROCESSING, so they cannot report a
+# multiprocess setup that failed to start.
+MULTIPROCESSING_ACTIVE = mp_manager is not None
+
+if MULTIPROCESSING_ACTIVE:
+    scan_semaphore = _mp_ctx.Semaphore(MAX_PARALLEL_SCANS)
+    scan_stats_lock = _mp_ctx.Lock()
     scan_stats = mp_manager.dict({
         "active_scans": 0, "total_scans": 0, "queued_scans": 0,
         "completed_scans": 0, "failed_scans": 0, "retried_scans": 0, "process_crashes": 0,
@@ -232,12 +260,14 @@ class JobManager:
         self.jobs: Dict[str, Job] = {}
         self.lock = threading.Lock()
         self.executor = (
-            ProcessPoolExecutor(max_workers=MAX_PROCESS_WORKERS)
-            if USE_MULTIPROCESSING
+            # Same context as the shared state above: a default-context pool
+            # would re-import the main module in every worker.
+            ProcessPoolExecutor(max_workers=MAX_PROCESS_WORKERS, mp_context=_mp_ctx)
+            if MULTIPROCESSING_ACTIVE
             else ThreadPoolExecutor(max_workers=max_workers)
         )
         os.makedirs(DEFAULT_OUTPUT_DIR, exist_ok=True)
-        logger.info(f"JobManager initialized (multiprocess={USE_MULTIPROCESSING})")
+        logger.info(f"JobManager initialized (multiprocess={MULTIPROCESSING_ACTIVE})")
         self._start_cleanup_timer()
 
     def _start_cleanup_timer(self) -> None:
@@ -765,7 +795,7 @@ def enhance_result_with_metadata(result: Dict[str, Any], tool_name: str, params:
     out["process_health"] = check_process_health()
     out["metadata"] = {
         "tool_name": tool_name, "scan_params": params, "timestamp": datetime.now().isoformat(),
-        "multiprocessing_enabled": USE_MULTIPROCESSING, "max_parallel_scans": MAX_PARALLEL_SCANS,
+        "multiprocessing_enabled": MULTIPROCESSING_ACTIVE, "max_parallel_scans": MAX_PARALLEL_SCANS,
         "retry_enabled": MAX_RETRY_ATTEMPTS > 1,
     }
     return out
@@ -805,7 +835,7 @@ def run_scan_in_background(tool_name: str, params: Dict[str, Any], scan_function
         "output_file": job.output_file,
         "check_status_url": f"/api/jobs/{job.job_id}",
         "get_result_url": f"/api/jobs/{job.job_id}/result",
-        "multiprocessing_enabled": USE_MULTIPROCESSING,
+        "multiprocessing_enabled": MULTIPROCESSING_ACTIVE,
         "max_retry_attempts": MAX_RETRY_ATTEMPTS,
     }
 
