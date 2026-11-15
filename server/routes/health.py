@@ -2,15 +2,16 @@
 Health check route: GET /health with tool availability and scan stats.
 """
 import logging
+import os
 import shutil
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import pathmap
 from flask import Flask, jsonify, request
 
 from core import (
     execute_command, check_process_health, scan_stats_lock, scan_stats,
-    ENHANCED_ENV,
+    ENHANCED_ENV, PROJECT_VENV_BIN,
 )
 
 # Detect tools against the SAME PATH the executor runs them with (includes the
@@ -26,6 +27,41 @@ _TOOL_ALIASES = {
     "opengrep": ("semgrep",),
     "semgrep": ("opengrep",),
 }
+
+# Normalised project venv bin dir, used to spot scanners whose lifetime is tied
+# to the server's own virtualenv.
+_VENV_BIN = os.path.normcase(os.path.normpath(PROJECT_VENV_BIN))
+
+
+def _tool_path(tool: str, check_cmd: str) -> str:
+    """Absolute path the tool resolves to on the executor PATH, or ""."""
+    candidates = (_binary_of(check_cmd),) + _TOOL_ALIASES.get(tool, ())
+    for binary in candidates:
+        if not binary:
+            continue
+        found = shutil.which(binary, path=_ENHANCED_PATH)
+        if found:
+            return os.path.realpath(found)
+    return ""
+
+
+def _is_fragile(path: str) -> bool:
+    """True when a tool is installed inside the server's own virtualenv.
+
+    Rebuilding the venv deletes everything in it, so a scanner installed there
+    disappears without any code change and without any error: /health simply
+    starts reporting it missing and scans quietly run with one engine fewer.
+
+    That is not hypothetical. Recreating the venv for Python 3.14 removed
+    semgrep, checkov and safety in exactly this way, and the stale
+    ``~/.local/bin/semgrep`` symlink left behind pointed into the deleted venv,
+    so the binary still appeared in a directory listing while `which` found
+    nothing. Scanners belong in pipx venvs or system packages, which survive a
+    rebuild -- see scripts/install-python-scanners.sh.
+    """
+    if not path:
+        return False
+    return os.path.normcase(os.path.normpath(path)).startswith(_VENV_BIN + os.sep)
 
 
 def _binary_of(check_cmd: str) -> str:
@@ -169,6 +205,16 @@ def register(app: Flask) -> None:
             1 for tool in kali_tools.keys() if tools_status.get(tool, False)
         )
 
+        # Scanners installed inside the server venv disappear the next time the
+        # venv is rebuilt. Report them while they still work, so a rebuild is a
+        # visible warning instead of coverage quietly dropping out of a sweep.
+        fragile_tools: List[str] = []
+        for group in (essential_tools, additional_tools, kali_tools):
+            for tool, check_cmd in group.items():
+                if tools_status.get(tool) and _is_fragile(_tool_path(tool, check_cmd)):
+                    fragile_tools.append(tool)
+        fragile_tools.sort()
+
         # Opt-in functional verification. Off by default because it costs one
         # subprocess per tool; on when a caller actually wants to know that the
         # binaries run, not merely that they exist.
@@ -194,6 +240,13 @@ def register(app: Flask) -> None:
                 "tools_broken": sorted(t for t, v in tools_functional.items()
                                        if v.get("status") == "broken")}
                if tools_functional else {}),
+            # Present only when something is installed in the server venv.
+            **({"fragile_tools": fragile_tools,
+                "fragile_tools_hint": (
+                    "Installed inside the server venv; rebuilding the venv deletes "
+                    "them. Reinstall with scripts/install-python-scanners.sh so they "
+                    "live in pipx venvs instead."
+                )} if fragile_tools else {}),
             "all_essential_tools_available": all_essential_available,
             "total_tools_available": available_count,
             "total_tools_count": total_count,
