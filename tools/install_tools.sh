@@ -126,6 +126,43 @@ case "$(uname -m)" in
     *)             REL_ARCH="" ;;
 esac
 
+drop_root_symlink() {
+    # A /usr/local/bin/<tool> symlink pointing into /root is readable only by
+    # root. The server runs as a normal user (uid 1000 on the Kali box), so for
+    # that process the name resolves to nothing, or to an older copy elsewhere.
+    #
+    # This is not hypothetical. `go install` with GOPATH=/root/go put gosec in
+    # /root/go/bin and symlinked it here, and the server kept using a stale
+    # gosec under /home/<user>/go/bin instead.
+    #
+    # Clear the link so the install step below can put the real binary in
+    # /usr/local/bin, where every user can execute it. Done before any check,
+    # because `command -v` as root is happy with the link and would otherwise
+    # skip the install entirely.
+    # USR_LOCAL_BIN is overridable so this is testable; it is /usr/local/bin in use.
+    local link="${USR_LOCAL_BIN:-/usr/local/bin}/$1"
+    local target
+    [ -L "$link" ] || return 0
+    target="$(readlink "$link" 2>/dev/null)"
+    case "$target" in
+        /root/*)
+            print_warning "removing $link -> $target (the server user cannot read it)"
+            rm -f "$link"
+            ;;
+    esac
+    return 0
+}
+
+# Go-installed tools are the ones that used to be symlinked out of /root.
+for _tool in gosec gitleaks tfsec; do
+    drop_root_symlink "$_tool"
+done
+
+# GOBIN puts the binary itself in /usr/local/bin. GOPATH keeps the module
+# cache in root's home, so a sudo run cannot leave root-owned files in the
+# invoking user's ~/go.
+GO_INSTALL_ENV="GOPATH=/root/go GOBIN=/usr/local/bin"
+
 tool_satisfied() {
     # True when the tool, or an accepted stand-in, is runnable. The only
     # stand-in is the one the server itself already accepts:
@@ -272,19 +309,16 @@ fi
 
 # Gosec
 print_status "Installing Gosec..."
-if ! command_exists gosec; then
-    # Set up Go environment
-    export GOPATH=/root/go
-    export PATH=$PATH:$GOPATH/bin
-    go install github.com/securego/gosec/v2/cmd/gosec@latest 2>&1 | tail -1 || true
-    ln -sf $GOPATH/bin/gosec /usr/local/bin/gosec 2>/dev/null || true
-    if command_exists gosec; then
-        print_success "Gosec installed"
-    else
-        print_warning "Gosec installation failed (Go required)"
-    fi
+if command_exists gosec; then
+    print_warning "Gosec already installed ($(command -v gosec))"
 else
-    print_warning "Gosec already installed"
+    run_logged gosec env $GO_INSTALL_ENV \
+        go install github.com/securego/gosec/v2/cmd/gosec@latest || true
+    if command_exists gosec; then
+        print_success "Gosec installed ($(command -v gosec))"
+    else
+        print_warning "Gosec installation failed (Go required) - see $LOG_DIR/gosec.log"
+    fi
 fi
 
 # Brakeman
@@ -361,9 +395,10 @@ if ! command_exists gitleaks; then
         print_warning "Could not fetch latest version, using fallback method..."
         # Fallback: use apt if available or install from alternative source
         apt install -y gitleaks 2>&1 | grep -v "WARNING" || {
-            # Alternative: Install using go
-            go install github.com/gitleaks/gitleaks/v8@latest 2>&1 | tail -1 || true
-            ln -sf /root/go/bin/gitleaks /usr/local/bin/gitleaks 2>/dev/null || true
+            # Alternative: install using go, into /usr/local/bin (see
+            # drop_root_symlink above for why not /root/go/bin).
+            run_logged gitleaks-go env $GO_INSTALL_ENV \
+                go install github.com/gitleaks/gitleaks/v8@latest || true
         }
     else
         wget -q https://github.com/gitleaks/gitleaks/releases/download/${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION:1}_linux_x64.tar.gz 2>/dev/null || {
@@ -505,9 +540,9 @@ else
         | bash >"$LOG_DIR/tfsec.log" 2>&1 || true
     if ! command_exists tfsec; then
         run_logged tfsec-apt apt install -y tfsec \
-            || run_logged tfsec-go go install github.com/aquasecurity/tfsec/cmd/tfsec@latest \
+            || run_logged tfsec-go env $GO_INSTALL_ENV \
+                go install github.com/aquasecurity/tfsec/cmd/tfsec@latest \
             || true
-        ln -sf /root/go/bin/tfsec /usr/local/bin/tfsec 2>/dev/null || true
     fi
     if command_exists tfsec; then
         print_success "tfsec installed ($(command -v tfsec))"
