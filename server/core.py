@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -614,6 +615,28 @@ def _probe_memory_limiter() -> bool:
     return supported
 
 
+# Credentials that a command string must never carry into a result or a log.
+# Secrets belong outside argv in the first place - argv is world-readable via
+# /proc/<pid>/cmdline, so dependency-check gets its NVD key through a property
+# file - but a caller can still pass one through additional_args, and every
+# scan result echoes the command that produced it.
+_SECRET_ARG_PATTERNS = (
+    re.compile(r"(--nvdApiKey[=\s]+)(\S+)", re.IGNORECASE),
+    re.compile(r"(nvd\.api\.key\s*=\s*)(\S+)"),
+    re.compile(r"(--api[-_]?key[=\s]+)(\S+)", re.IGNORECASE),
+    re.compile(r"(--(?:auth[-_]?)?token[=\s]+)(\S+)", re.IGNORECASE),
+    re.compile(r"(--password[=\s]+)(\S+)", re.IGNORECASE),
+)
+
+
+def redact_command(command: str) -> str:
+    """Replace credential values in a command string with a placeholder."""
+    out = command
+    for pattern in _SECRET_ARG_PATTERNS:
+        out = pattern.sub(lambda m: m.group(1) + "***REDACTED***", out)
+    return out
+
+
 def wrap_with_memory_limit(command: str) -> str:
     """Wrap a shell command so it runs under a hard per-scan memory cap.
 
@@ -697,7 +720,9 @@ class CommandExecutor:
                 "stdout": self.stdout_data, "stderr": self.stderr_data,
                 "return_code": self.return_code, "success": success, "timed_out": self.timed_out,
                 "partial_results": self.timed_out and bool(self.stdout_data or self.stderr_data),
-                "command": self.command[:200],
+                # Redact before truncating: the result travels to API
+                # clients, job records and logs.
+                "command": redact_command(self.command)[:200],
             }
         except Exception as e:
             logger.error(f"Execute error: {e}")
