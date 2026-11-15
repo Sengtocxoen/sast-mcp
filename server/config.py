@@ -4,6 +4,7 @@ All timeouts, paths, and feature flags in one place for easy tuning.
 """
 import os
 import multiprocessing
+import shutil
 
 import pathmap as _pathmap
 
@@ -34,7 +35,32 @@ BANDIT_TIMEOUT = int(os.environ.get("BANDIT_TIMEOUT", 1800))
 TRUFFLEHOG_TIMEOUT = int(os.environ.get("TRUFFLEHOG_TIMEOUT", 3600))
 DEPENDENCY_CHECK_TIMEOUT = int(os.environ.get("DEPENDENCY_CHECK_TIMEOUT", 1800))
 
-DEPENDENCY_CHECK_PATH = os.environ.get("DEPENDENCY_CHECK_PATH", "dependency-check")
+
+def _resolve_dependency_check() -> str:
+    """Name of the OWASP Dependency-Check CLI as actually installed.
+
+    The release tarball ships the launcher as `dependency-check.sh`, which is
+    what tools/install_tools.sh symlinks into /usr/local/bin. Some distro
+    packages name it `dependency-check`. This used to be hard-coded to the
+    latter, so on the Kali box the tool was installed and working
+    (`dependency-check.sh --version` -> 13.0.0) while /health reported
+    "dependency-check": false and every scan through /api/dependencies/check
+    died with "dependency-check: not found".
+
+    Checking both names means health detection and the scan route agree with
+    what is on disk. DEPENDENCY_CHECK_PATH still overrides, for a custom
+    location.
+    """
+    explicit = os.environ.get("DEPENDENCY_CHECK_PATH")
+    if explicit:
+        return explicit
+    for name in ("dependency-check.sh", "dependency-check"):
+        if shutil.which(name):
+            return name
+    return "dependency-check.sh"
+
+
+DEPENDENCY_CHECK_PATH = _resolve_dependency_check()
 
 # Path resolution (Windows client -> Linux server)
 MOUNT_POINT = os.environ.get("MOUNT_POINT", "/mnt/work")
