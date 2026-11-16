@@ -97,8 +97,50 @@ _LANG_MAP = {
 # reported as "a YAML project" nor drag in the generic security-audit packs.
 _IAC_ONLY_EXT = {".yaml", ".yml", ".tf"}
 
-_SKIP_DIRS = {".git", "vendor", "node_modules", "dist", "build", "testdata",
-              "third_party", ".venv", "venv", "__pycache__", ".tox", ".mypy_cache"}
+# Directories holding code someone wrote.
+_SKIP_DIRS_SOURCE = {".git", "vendor", "node_modules", "dist", "build", "testdata",
+                     "third_party", ".venv", "venv", "__pycache__", ".tox", ".mypy_cache"}
+
+# Directories holding output a build produced. Scanning them is not free and not
+# useful: the files are minified or machine-written, so a pattern engine reads
+# single lines hundreds of kilobytes long, and any finding points at compiled
+# output rather than at the source it came from.
+#
+# This cost nothing while semgrep was missing from the scan host, because no
+# engine walked these trees in depth. With semgrep restored in the 2026-11-16
+# sweep it became the single largest cost: sf-ipark-tools, which keeps Next.js
+# bundles in .next, took 2,713s against 112s the week before - 24x, where
+# comparable repos moved 4-6x. The whole cycle ran 9h48m against 8h20m.
+#
+# Only dot-directories are listed, and that is deliberate. A leading dot means
+# tool state in every ecosystem, so these names cannot be a source tree. Plain
+# names like "coverage", "target", "out", "cache", "public" and "static" are
+# excluded from this set even though some of them hold build output here,
+# because each has projects that keep real code under that name and an
+# unanchored match would silently drop it. Measured on this estate, .next is
+# 464 MB of the 485 MB, so the plain names buy little and risk much. If
+# "coverage" is wanted later, anchor it to the repository root rather than
+# matching it at any depth.
+_SKIP_DIRS_BUILD = {".next", ".nuxt", ".svelte-kit", ".angular", ".turbo",
+                    ".parcel-cache", ".pytest_cache", ".ruff_cache",
+                    ".terraform", ".serverless", ".gradle"}
+
+# What the pattern engines skip: source dependencies plus build output.
+_SKIP_DIRS = _SKIP_DIRS_SOURCE | _SKIP_DIRS_BUILD
+
+# What the staging copy skips, which is the SOURCE set only.
+#
+# Build output stays on the scan host on purpose. gitleaks and trufflehog read
+# the staged tree, and a compiled bundle is one of the places a key actually
+# ends up: anything inlined at build time is in there whether or not it is in
+# the source. Excluding these directories from the copy, as the first version of
+# this change did, would have removed that from secret scanning without saying
+# so - the same silent coverage loss this change exists to fix.
+_STAGE_SKIP_DIRS = _SKIP_DIRS_SOURCE
+# File patterns the pattern engines skip wherever they appear. Source maps are
+# generated, *.min.* and *.bundle.* are compiled output.
+_SKIP_FILE_GLOBS = ("*.min.js", "*.min.mjs", "*.min.css", "*.bundle.js",
+                    "*.bundle.mjs", "*.map")
 _CLONE_TIMEOUT = 300
 # Clone + scan here (local disk) by default. Scanning off the vmhgfs share is
 # ~100x slower due to per-file fuse round-trips; only the small JSON reports
@@ -199,7 +241,7 @@ def _stage_local(path: str, base_dir: str, mode: str = "auto") -> Dict[str, Any]
         # staging can never be the reason a scan produces nothing.
         logger.warning(f"tar staging produced nothing for {src}; falling back to copytree")
         shutil.rmtree(dest, ignore_errors=True)
-        shutil.copytree(src, dest, ignore=shutil.ignore_patterns(*_SKIP_DIRS),
+        shutil.copytree(src, dest, ignore=shutil.ignore_patterns(*_STAGE_SKIP_DIRS),
                         symlinks=False, ignore_dangling_symlinks=True)
         res = {"return_code": 0}
     out = {"dest": dest, "name": name, "reused": False, "staged": True,
@@ -208,7 +250,7 @@ def _stage_local(path: str, base_dir: str, mode: str = "auto") -> Dict[str, Any]
     # A partial copy (tar timed out or failed mid-stream) is still scanned, because
     # scanning in place off the share is ~100x slower. But it must be visible:
     # a large repo was once scanned with ~1,000 files missing and no error anywhere.
-    defect = staging._copy_defect(src, dest, res, frozenset(_SKIP_DIRS))
+    defect = staging._copy_defect(src, dest, res, frozenset(_STAGE_SKIP_DIRS))
     if defect:
         logger.warning(f"staging incomplete for {src}: {defect}")
         out["stage_defect"] = defect
@@ -353,6 +395,19 @@ def _graudit_to_json(path: str) -> None:
 _POST = {"trufflehog": _jsonl_to_json, "graudit": _graudit_to_json}
 
 
+def _graudit_timeout(file_count: int) -> int:
+    """graudit's limit, scaled to the size of the tree it has to read.
+
+    300s fits a small repository and kills a large one mid-pass. The counts come
+    from the file census, so this is the number of files the engines will read.
+    """
+    if file_count > 2000:
+        return _SLOW_TIMEOUT
+    if file_count > 500:
+        return _TOOL_TIMEOUT
+    return _FAST_TIMEOUT
+
+
 def _run_tool(tool: str, command: str, report: str, timeout: int) -> Dict[str, Any]:
     res = execute_command(command, timeout=timeout)
     out = {"tool": tool, "report": report, "return_code": res.get("return_code"),
@@ -365,9 +420,37 @@ def _run_tool(tool: str, command: str, report: str, timeout: int) -> Dict[str, A
             logger.warning(f"{tool}: post-processing failed: {e}")
     if os.path.exists(report) and os.path.getsize(report) > 0:
         out.update(_parse_findings(report, tool))
+        if out["timed_out"]:
+            # The findings that were written are real, so they are kept and
+            # counted. What must not happen is this reading as a finished pass:
+            # graudit's cut-short run on rebot wrote 279 findings and a report
+            # file indistinguishable from a complete one, and only the response
+            # carried timed_out. Say it in the result and leave a marker in the
+            # published folder, where the report alone cannot show it.
+            out["partial"] = True
+            out["partial_reason"] = (
+                f"{tool} was stopped by its {timeout}s limit after writing "
+                f"{out.get('findings', 0)} findings; the pass did not finish, so "
+                f"treat the absence of a finding here as unproven")
+            _mark_cut_short(report, tool, timeout, out.get("findings", 0))
     else:
         out["error"] = "no report written: " + _error_text(res)
     return out
+
+
+def _mark_cut_short(report: str, tool: str, timeout: int, findings: int) -> None:
+    """Record a cut-short pass next to its report.
+
+    Not a .json file: collect_stats.py globs *.json in this folder and would read
+    a marker as a tool report.
+    """
+    try:
+        path = os.path.join(os.path.dirname(report), "_cut_short.txt")
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')}\t{tool}\t"
+                     f"stopped at {timeout}s\t{findings} findings written\n")
+    except OSError as e:  # pragma: no cover - a marker must never fail a scan
+        logger.warning(f"{tool}: could not write cut-short marker: {e}")
 
 
 def _error_text(res: Dict[str, Any]) -> str:
@@ -778,6 +861,11 @@ def _build_plan(ctx: Dict[str, Any], dest: str, out_dir: str,
         if configs:
             engine = resolve_grep_engine()
             excl = " ".join(f"--exclude {q(d)}" for d in sorted(_SKIP_DIRS))
+            # Minified and generated files also get committed outside a build
+            # directory, where the directory skip cannot reach them. One line of
+            # 300 KB costs a pattern engine far more than the same code
+            # unminified, and a finding in it points at output, not source.
+            excl += " " + " ".join(f"--exclude {q(p)}" for p in _SKIP_FILE_GLOBS)
             cfg = " ".join(f"--config {q(c)}" for c in configs)
             jobs, mem = _grep_jobs_mem()
             add("semgrep",
@@ -830,16 +918,32 @@ def _build_plan(ctx: Dict[str, Any], dest: str, out_dir: str,
     # bearer covers js/ts/ruby/java/php/go/python with dataflow + PII rules, so it
     # is the main independent second opinion against semgrep on those languages.
     if code_langs and have("bearer") and want.get("bearer", True):
+        # --skip-path takes comma-separated globs. bearer also honours
+        # .gitignore by default, which already covers build output in most
+        # repositories, but not in one that commits it.
+        skip = ",".join(f"{d}/*" for d in sorted(_SKIP_DIRS_BUILD))
         add("bearer",
             f"bearer scan {q(dest)} --format json --output {q(rep('bearer'))} "
+            f"--skip-path {q(skip)} "
             f"--quiet --exit-code 0 --disable-version-check || true",
             rep("bearer"), _SEMGREP_TIMEOUT, weight=2)
 
     # graudit is grep-grade: cheap, noisy on its own, useful purely as a
     # corroborating vote. Normalized at "low" severity for that reason.
+    #
+    # Its time limit used to be _FAST_TIMEOUT, which is 300s. That does not fit a
+    # large tree: in the 2026-11-16 sweep graudit was killed on rebot after
+    # recording 279 findings, and on tsumura-research-paper-search-adm with none,
+    # and a killed run leaves a report file that looks like any other. Scale the
+    # limit with the amount of code instead.
     if code_langs and have("graudit") and want.get("graudit", True):
-        add("graudit", f"graudit -z -c 0 {q(dest)} > {q(rep('graudit'))} 2>/dev/null || true",
-            rep("graudit"), _FAST_TIMEOUT)
+        # graudit's -x excludes files, not directories, so it gets the minified
+        # globs and reads build directories anyway. Its cost there is bounded by
+        # the time limit above, which now fits the tree.
+        xcl = ",".join(_SKIP_FILE_GLOBS)
+        add("graudit",
+            f"graudit -z -c 0 -x {q(xcl)} {q(dest)} > {q(rep('graudit'))} 2>/dev/null || true",
+            rep("graudit"), _graudit_timeout(sum(langs.values())))
 
     # --- secrets: two independent detectors ---
     if want.get("secrets", True):
@@ -948,6 +1052,18 @@ def _coverage(ctx: Dict[str, Any], plan: List[Dict[str, Any]],
         "tools_skipped": dict(sorted((skips or {}).items())),
         "engine": resolve_grep_engine(),
         "markers_found": sorted(ctx["markers"].keys()),
+        # What the pattern engines did not read. Recorded because a skip that is
+        # only visible in the source is a skip nobody reviews: this is the same
+        # reason tools_skipped exists.
+        "excluded": {
+            "dependency_dirs": sorted(_SKIP_DIRS_SOURCE),
+            "build_dirs": sorted(_SKIP_DIRS_BUILD),
+            "file_globs": sorted(_SKIP_FILE_GLOBS),
+            "note": ("Build directories and these file patterns are skipped by the "
+                     "pattern engines only. They are still copied to the scan host and "
+                     "still read by gitleaks and trufflehog, because a compiled bundle "
+                     "can carry a key that is not in the source."),
+        },
     }
 
 
@@ -1046,6 +1162,10 @@ def register(app: Flask) -> None:
                 "output_dir": published_dir,
                 "scanned_on": "local-disk" if cloned.get("staged", True) else "in-place",
                 "tools_run": [r["tool"] for r in results],
+                # Named separately because a partial pass is easy to miss inside
+                # results[]: its report file looks complete and its findings are
+                # real. A reader comparing weeks needs to know the pass was cut.
+                "tools_cut_short": [r["tool"] for r in results if r.get("partial")],
                 "total_findings": total,
                 "results": results,
                 "coverage": coverage,
