@@ -278,3 +278,63 @@ def test_fleet_scan_can_opt_into_other_ecosystems(plan_env, tmp_path, monkeypatc
     plan = repo_scan._build_plan(
         _ctx({".js": 20}, {"package-lock.json"}), str(tmp_path), str(tmp_path), {})
     assert "--data" in _dc_cmd(plan)
+
+
+# -- NVD 503 and CISA 403 survival knobs ------------------------------------
+
+def test_update_run_can_widen_the_nvd_delay(client, monkeypatch, tmp_path):
+    """Retries have no backoff upstream, so the call delay is the only knob."""
+    monkeypatch.setattr(deps_routes, "NVD_API_KEY", "s3cr3t-key")
+    monkeypatch.setattr(deps_routes, "NVD_API_DELAY_MS", "6000")
+    monkeypatch.setattr(deps_routes, "NVD_MAX_RETRY_COUNT", "30")
+    seen = {}
+    monkeypatch.setattr(deps_routes, "execute_command",
+                        lambda command, **k: seen.update(command=command) or
+                        {"success": True, "stdout": "", "stderr": "", "return_code": 0})
+    assert _post(client, target=ROOT, data_dir=str(tmp_path / "c")).status_code == 200
+    assert "--nvdApiDelay 6000" in seen["command"]
+    assert "--nvdMaxRetryCount 30" in seen["command"]
+
+
+def test_kev_can_be_disabled_when_cisa_blocks_us(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(deps_routes, "NVD_API_KEY", "s3cr3t-key")
+    monkeypatch.setattr(deps_routes, "DEPENDENCY_CHECK_DISABLE_KEV", True)
+    monkeypatch.setattr(deps_routes, "DEPENDENCY_CHECK_KEV_URL", "")
+    seen = {}
+    monkeypatch.setattr(deps_routes, "execute_command",
+                        lambda command, **k: seen.update(command=command) or
+                        {"success": True, "stdout": "", "stderr": "", "return_code": 0})
+    assert _post(client, target=ROOT, data_dir=str(tmp_path / "c")).status_code == 200
+    assert "--disableKnownExploited" in seen["command"]
+
+
+def test_a_kev_mirror_wins_over_disabling_it(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(deps_routes, "NVD_API_KEY", "s3cr3t-key")
+    monkeypatch.setattr(deps_routes, "DEPENDENCY_CHECK_DISABLE_KEV", True)
+    monkeypatch.setattr(deps_routes, "DEPENDENCY_CHECK_KEV_URL",
+                        "https://mirror.internal/kev.json")
+    seen = {}
+    monkeypatch.setattr(deps_routes, "execute_command",
+                        lambda command, **k: seen.update(command=command) or
+                        {"success": True, "stdout": "", "stderr": "", "return_code": 0})
+    assert _post(client, target=ROOT, data_dir=str(tmp_path / "c")).status_code == 200
+    assert "--kevURL https://mirror.internal/kev.json" in seen["command"]
+    assert "--disableKnownExploited" not in seen["command"]
+
+
+def test_update_flags_are_absent_when_not_updating(client, monkeypatch, tmp_path):
+    """With -n there is no update, so none of these apply."""
+    monkeypatch.setattr(deps_routes, "NVD_API_KEY", "")
+    monkeypatch.setattr(deps_routes, "NVD_API_DELAY_MS", "6000")
+    monkeypatch.setattr(deps_routes, "DEPENDENCY_CHECK_DISABLE_KEV", True)
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "odc.mv.db").write_text("warmed")
+    seen = {}
+    monkeypatch.setattr(deps_routes, "execute_command",
+                        lambda command, **k: seen.update(command=command) or
+                        {"success": True, "stdout": "", "stderr": "", "return_code": 0})
+    assert _post(client, target=ROOT, data_dir=str(cache),
+                 noupdate=True).status_code == 200
+    assert "--nvdApiDelay" not in seen["command"]
+    assert "--disableKnownExploited" not in seen["command"]

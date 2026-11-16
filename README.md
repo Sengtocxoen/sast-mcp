@@ -446,6 +446,31 @@ curl -s localhost:6000/health | python3 -m json.tool | grep -A8 dependency_check
 `nvd_cache_present`, and lists `blockers` when any of them is missing. It never
 reports the key itself.
 
+**When the update fails.** Two upstream failures are common, and neither is a
+problem with your key. The script now pre-flights both and says which one it
+hit.
+
+`NVD Returned Status Code: 503` — the NVD API is unavailable. It returns 503 in
+bursts, and dependency-check retries without backoff, so 30 retries can burn in
+14 seconds ([#8469](https://github.com/dependency-check/DependencyCheck/issues/8469),
+[#8618](https://github.com/dependency-check/DependencyCheck/issues/8618),
+[#6107](https://github.com/dependency-check/DependencyCheck/issues/6107)). The
+script sets `--nvdApiDelay 6000` and retries the whole update three times with
+widening gaps. If every attempt gets 503, wait and re-run; a failed update
+leaves the existing cache untouched.
+
+`403 Forbidden` on `www.cisa.gov` — the Known Exploited Vulnerabilities feed is
+blocked from some networks, and that single failure aborts the whole NVD update.
+The script probes the feed and, when it is blocked, passes
+`--disableKnownExploited` so the NVD download completes. Findings then lack the
+"known exploited" flag. To keep it, mirror the feed somewhere you control and
+pass `--kev-url <url>`, or set `DEPENDENCY_CHECK_KEV_URL`. Do not point it at a
+third-party mirror you have not vetted: it decides which findings get
+prioritised.
+
+A `401` or `403` from `services.nvd.nist.gov` is the one case that *is* the key.
+A new key must be activated from the link in the NVD's email before it works.
+
 In a fleet scan, Dependency-Check runs only on Maven and Gradle repos, where it
 is strongest. Set `DEPENDENCY_CHECK_ALL_ECOSYSTEMS=1` to include npm and Python
 repos as well; it costs minutes per repo across the estate, and npm audit,

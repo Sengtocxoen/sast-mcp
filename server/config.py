@@ -81,6 +81,24 @@ DEPENDENCY_CHECK_DATA_DIR = os.environ.get(
 # cache build crawls for hours.
 NVD_API_KEY = os.environ.get("NVD_API_KEY", "").strip()
 
+# The NVD API returns 503 in bursts, and dependency-check retries without
+# backoff (upstream issues #8469, #8618, #6107), so an update can exhaust 30
+# retries in 14 seconds. Seen here on 2026-11-15. A wider delay between calls
+# is the only knob that helps; empty means the tool's own default, which is
+# 3500ms with a key.
+NVD_API_DELAY_MS = os.environ.get("NVD_API_DELAY_MS", "").strip()
+NVD_MAX_RETRY_COUNT = os.environ.get("NVD_MAX_RETRY_COUNT", "").strip()
+
+# www.cisa.gov returns 403 for the Known Exploited Vulnerabilities feed from
+# some networks, and that one failure aborts an otherwise healthy NVD update.
+# Set this when the feed is blocked here: findings lose the "known exploited"
+# flag, but the update completes. Prefer mirroring the feed and setting
+# DEPENDENCY_CHECK_KEV_URL if you need the enrichment.
+DEPENDENCY_CHECK_DISABLE_KEV = os.environ.get(
+    "DEPENDENCY_CHECK_DISABLE_KEV", "0"
+).lower() in ("1", "true", "yes", "y")
+DEPENDENCY_CHECK_KEV_URL = os.environ.get("DEPENDENCY_CHECK_KEV_URL", "").strip()
+
 # Dependency-Check in a fleet scan normally runs only on Maven/Gradle repos,
 # where it is strongest. Set to 1 to also run it on npm and Python repos, which
 # adds minutes per repo across the whole estate - npm audit, safety, pip-audit

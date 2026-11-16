@@ -11,8 +11,12 @@ from flask import Flask, request, jsonify
 
 from config import (
     DEPENDENCY_CHECK_DATA_DIR,
+    DEPENDENCY_CHECK_DISABLE_KEV,
+    DEPENDENCY_CHECK_KEV_URL,
     DEPENDENCY_CHECK_PATH,
     DEPENDENCY_CHECK_TIMEOUT,
+    NVD_API_DELAY_MS,
+    NVD_MAX_RETRY_COUNT,
     NVD_API_KEY,
 )
 from core import execute_command, resolve_windows_path, response_as_toon
@@ -231,6 +235,18 @@ def register(app: Flask) -> None:
                 command += f" -P {shlex.quote(prop_file)}"
             if noupdate:
                 command += " -n"
+            else:
+                # Only meaningful while updating. See config.py for why these
+                # exist: the NVD 503s in bursts and retries have no backoff,
+                # and a 403 on the CISA feed aborts the whole update.
+                if NVD_API_DELAY_MS:
+                    command += f" --nvdApiDelay {shlex.quote(NVD_API_DELAY_MS)}"
+                if NVD_MAX_RETRY_COUNT:
+                    command += f" --nvdMaxRetryCount {shlex.quote(NVD_MAX_RETRY_COUNT)}"
+                if DEPENDENCY_CHECK_KEV_URL:
+                    command += f" --kevURL {shlex.quote(DEPENDENCY_CHECK_KEV_URL)}"
+                elif DEPENDENCY_CHECK_DISABLE_KEV:
+                    command += " --disableKnownExploited"
             if pretty_print:
                 command += " --prettyPrint"
             if additional_args:
