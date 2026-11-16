@@ -16,6 +16,27 @@ logger = logging.getLogger(__name__)
 def register(app: Flask) -> None:
     @app.route("/api/secrets/trufflehog", methods=["POST"])
     def trufflehog():
+        """TruffleHog must run with --no-update, or it scans nothing.
+
+        On startup trufflehog tries to replace its own binary. /usr/local/bin
+        is root-owned and the server runs as a normal user, so the attempt
+        fails, and trufflehog exits 1 having scanned nothing:
+
+            {"level":"error","logger":"trufflehog",
+             "msg":"error occurred with trufflehog updater",
+             "error":"cannot move binary (exit status 1)"}
+
+        stdout is empty, so the TOON wrapper reported "No findings detected by
+        trufflehog" - a false clean, on every call. Measured on 2026-11-15
+        against a directory holding one throwaway RSA private key: without the
+        flag, rc=1, 0 findings, and no "finished scanning" line at all; with
+        it, rc=0 and the PrivateKey detector fires.
+
+        /api/repo-scan has always passed --no-update (see repo_scan.py), so
+        the weekly sweep was unaffected. This is the per-tool route catching
+        up. Same failure class as the gitleaks docstring below: a tool that
+        produces no output must not be reported as a clean scan.
+        """
         try:
             params = request.json or {}
             target = params.get("target", ".")
@@ -24,7 +45,7 @@ def register(app: Flask) -> None:
             only_verified = params.get("only_verified", False)
             additional_args = params.get("additional_args", "")
             resolved = resolve_windows_path(target)
-            command = f"trufflehog {scan_type} {resolved}"
+            command = f"trufflehog {scan_type} {resolved} --no-update"
             if json_output:
                 command += " --json"
             if only_verified:
@@ -34,6 +55,18 @@ def register(app: Flask) -> None:
             result = execute_command(command, timeout=TRUFFLEHOG_TIMEOUT)
             result["original_path"] = target
             result["resolved_path"] = resolved
+            # A run that produced nothing is only a clean scan if trufflehog
+            # says it scanned. Otherwise say so, rather than letting the
+            # wrapper turn silence into "no secrets found".
+            if not result.get("stdout", "").strip():
+                stderr = result.get("stderr", "") or ""
+                if "finished scanning" not in stderr:
+                    result["success"] = False
+                    result["error"] = (
+                        "trufflehog produced no output and never reported "
+                        "'finished scanning'; treat this as unproven, not clean. "
+                        "stderr: " + stderr.strip()[-300:]
+                    )
             if json_output and result.get("stdout"):
                 try:
                     result["parsed_secrets"] = [json.loads(line) for line in result["stdout"].strip().split("\n") if line.strip()]

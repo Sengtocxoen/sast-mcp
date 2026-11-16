@@ -4,6 +4,7 @@ All timeouts, paths, and feature flags in one place for easy tuning.
 """
 import os
 import multiprocessing
+import shutil
 
 import pathmap as _pathmap
 
@@ -34,7 +35,77 @@ BANDIT_TIMEOUT = int(os.environ.get("BANDIT_TIMEOUT", 1800))
 TRUFFLEHOG_TIMEOUT = int(os.environ.get("TRUFFLEHOG_TIMEOUT", 3600))
 DEPENDENCY_CHECK_TIMEOUT = int(os.environ.get("DEPENDENCY_CHECK_TIMEOUT", 1800))
 
-DEPENDENCY_CHECK_PATH = os.environ.get("DEPENDENCY_CHECK_PATH", "dependency-check")
+
+def _resolve_dependency_check() -> str:
+    """Name of the OWASP Dependency-Check CLI as actually installed.
+
+    The release tarball ships the launcher as `dependency-check.sh`, which is
+    what tools/install_tools.sh symlinks into /usr/local/bin. Some distro
+    packages name it `dependency-check`. This used to be hard-coded to the
+    latter, so on the Kali box the tool was installed and working
+    (`dependency-check.sh --version` -> 13.0.0) while /health reported
+    "dependency-check": false and every scan through /api/dependencies/check
+    died with "dependency-check: not found".
+
+    Checking both names means health detection and the scan route agree with
+    what is on disk. DEPENDENCY_CHECK_PATH still overrides, for a custom
+    location.
+    """
+    explicit = os.environ.get("DEPENDENCY_CHECK_PATH")
+    if explicit:
+        return explicit
+    for name in ("dependency-check.sh", "dependency-check"):
+        if shutil.which(name):
+            return name
+    return "dependency-check.sh"
+
+
+DEPENDENCY_CHECK_PATH = _resolve_dependency_check()
+
+# Where Dependency-Check keeps its NVD cache (an H2 database).
+#
+# The shipped default is `[JAR]/data`, i.e. inside /opt/dependency-check, which
+# is root-owned while this server runs as a normal user. Every scan would fail
+# creating the database, so the cache goes somewhere the server can write -
+# next to the scan results it already owns.
+DEPENDENCY_CHECK_DATA_DIR = os.environ.get(
+    "DEPENDENCY_CHECK_DATA_DIR", "/var/sast-mcp/depcheck-data"
+)
+
+# NVD API key, read from the environment or .env - never committed, and never
+# passed on a command line (see routes/dependencies.py for why).
+#
+# The key is what makes this tool usable: dependencycheck.properties ships
+# nvd.api.requestsperthirtysecondswithoutapikey=5 against
+# nvd.api.requestsperthirtysecondswithapikey=50, so an unauthenticated first
+# cache build crawls for hours.
+NVD_API_KEY = os.environ.get("NVD_API_KEY", "").strip()
+
+# The NVD API returns 503 in bursts, and dependency-check retries without
+# backoff (upstream issues #8469, #8618, #6107), so an update can exhaust 30
+# retries in 14 seconds. Seen here on 2026-11-15. A wider delay between calls
+# is the only knob that helps; empty means the tool's own default, which is
+# 3500ms with a key.
+NVD_API_DELAY_MS = os.environ.get("NVD_API_DELAY_MS", "").strip()
+NVD_MAX_RETRY_COUNT = os.environ.get("NVD_MAX_RETRY_COUNT", "").strip()
+
+# www.cisa.gov returns 403 for the Known Exploited Vulnerabilities feed from
+# some networks, and that one failure aborts an otherwise healthy NVD update.
+# Set this when the feed is blocked here: findings lose the "known exploited"
+# flag, but the update completes. Prefer mirroring the feed and setting
+# DEPENDENCY_CHECK_KEV_URL if you need the enrichment.
+DEPENDENCY_CHECK_DISABLE_KEV = os.environ.get(
+    "DEPENDENCY_CHECK_DISABLE_KEV", "0"
+).lower() in ("1", "true", "yes", "y")
+DEPENDENCY_CHECK_KEV_URL = os.environ.get("DEPENDENCY_CHECK_KEV_URL", "").strip()
+
+# Dependency-Check in a fleet scan normally runs only on Maven/Gradle repos,
+# where it is strongest. Set to 1 to also run it on npm and Python repos, which
+# adds minutes per repo across the whole estate - npm audit, safety, pip-audit
+# and trivy already cover those ecosystems.
+DEPENDENCY_CHECK_ALL_ECOSYSTEMS = os.environ.get(
+    "DEPENDENCY_CHECK_ALL_ECOSYSTEMS", "0"
+).lower() in ("1", "true", "yes", "y")
 
 # Path resolution (Windows client -> Linux server)
 MOUNT_POINT = os.environ.get("MOUNT_POINT", "/mnt/work")

@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -480,6 +481,48 @@ PROJECT_VENV_BIN = os.path.join(
 )
 
 
+def _installer_user_bins() -> List[str]:
+    """bin dirs of the user who installed the pipx-managed scanners.
+
+    scripts/install-python-scanners.sh installs semgrep, checkov and safety with
+    pipx as the invoking user, so they land in /home/<user>/.local/bin. When the
+    server itself runs as root, os.path.expanduser("~") is /root, that directory
+    is absent from PATH, and the three scanners are invisible to both scans and
+    /health -- which reads as "semgrep is not installed" while pipx has it.
+
+    SUDO_USER (set when the server is started with sudo) and the owner of this
+    checkout both name the right home. SAST_TOOL_USER overrides, for a service
+    unit where neither applies.
+    """
+    try:
+        import pwd  # POSIX only; absent on Windows
+    except ImportError:
+        return []
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    candidates = [os.environ.get("SAST_TOOL_USER"), os.environ.get("SUDO_USER")]
+    try:
+        candidates.append(pwd.getpwuid(os.stat(repo_root).st_uid).pw_name)
+    except (OSError, KeyError):
+        pass
+
+    bins: List[str] = []
+    seen_homes: List[str] = []
+    for name in candidates:
+        if not name:
+            continue
+        try:
+            home = pwd.getpwnam(name).pw_dir
+        except KeyError:
+            continue
+        if not home or home in seen_homes:
+            continue
+        seen_homes.append(home)
+        bins.append(os.path.join(home, ".local", "bin"))
+        bins.append(os.path.join(home, "go", "bin"))
+    return bins
+
+
 def get_enhanced_env() -> Dict[str, str]:
     env = os.environ.copy()
     # The bin dir of the running interpreter. When the server is started via
@@ -500,6 +543,7 @@ def get_enhanced_env() -> Dict[str, str]:
     extra = [
         interpreter_bin, venv_bin, project_venv_bin,
         "/root/.local/bin", os.path.expanduser("~/.local/bin"),
+        *_installer_user_bins(),
         "/root/go/bin", os.path.expanduser("~/go/bin"), "/usr/local/go/bin",
         "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin",
     ]
@@ -569,6 +613,28 @@ def _probe_memory_limiter() -> bool:
         )
     _memory_limiter_supported = supported
     return supported
+
+
+# Credentials that a command string must never carry into a result or a log.
+# Secrets belong outside argv in the first place - argv is world-readable via
+# /proc/<pid>/cmdline, so dependency-check gets its NVD key through a property
+# file - but a caller can still pass one through additional_args, and every
+# scan result echoes the command that produced it.
+_SECRET_ARG_PATTERNS = (
+    re.compile(r"(--nvdApiKey[=\s]+)(\S+)", re.IGNORECASE),
+    re.compile(r"(nvd\.api\.key\s*=\s*)(\S+)"),
+    re.compile(r"(--api[-_]?key[=\s]+)(\S+)", re.IGNORECASE),
+    re.compile(r"(--(?:auth[-_]?)?token[=\s]+)(\S+)", re.IGNORECASE),
+    re.compile(r"(--password[=\s]+)(\S+)", re.IGNORECASE),
+)
+
+
+def redact_command(command: str) -> str:
+    """Replace credential values in a command string with a placeholder."""
+    out = command
+    for pattern in _SECRET_ARG_PATTERNS:
+        out = pattern.sub(lambda m: m.group(1) + "***REDACTED***", out)
+    return out
 
 
 def wrap_with_memory_limit(command: str) -> str:
@@ -654,7 +720,9 @@ class CommandExecutor:
                 "stdout": self.stdout_data, "stderr": self.stderr_data,
                 "return_code": self.return_code, "success": success, "timed_out": self.timed_out,
                 "partial_results": self.timed_out and bool(self.stdout_data or self.stderr_data),
-                "command": self.command[:200],
+                # Redact before truncating: the result travels to API
+                # clients, job records and logs.
+                "command": redact_command(self.command)[:200],
             }
         except Exception as e:
             logger.error(f"Execute error: {e}")

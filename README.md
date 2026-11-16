@@ -115,8 +115,13 @@ cd MCP-SAST-Server
 
 #### 2. Install Python Dependencies
 
+Kali refuses system-wide pip installs (PEP 668: "externally-managed-
+environment"), so install into a virtualenv. The server reads its own
+`venv/bin` even when started with another interpreter.
+
 ```bash
-pip install -r requirements.txt
+python3 -m venv venv
+venv/bin/python -m pip install -r requirements.txt
 ```
 
 #### 3. Configure Server (Optional)
@@ -328,7 +333,18 @@ The script will:
 
 **Installation takes 5-15 minutes depending on your internet speed.**
 
-**⚠ Having installation issues?** Common problems include stuck downloads, version conflicts, or network timeouts. Try running the script again or install tools manually.
+**⚠ Having installation issues?** Before reinstalling anything, find out
+whether the tool is actually missing:
+
+```bash
+scripts/check-tools.sh --versions
+```
+
+A tool can be installed and still be reported as failed, because gem, npm,
+go and pipx each install into a prefix that sudo's PATH does not list. The
+report says, per tool, whether it is on PATH, installed somewhere PATH
+misses, or genuinely absent. Per-tool install logs from the last run are in
+`/tmp/sast-install-logs`.
 
 ### Manual Installation
 
@@ -338,19 +354,31 @@ If you prefer to install tools manually:
 
 Many tools come pre-installed on Kali Linux. For missing tools:
 
-**Semgrep:**
+**Semgrep, Checkov, Safety** (one pipx venv each, so a rebuild of the
+server venv cannot delete them - run as yourself, not as root):
 ```bash
-pip3 install semgrep
+scripts/install-python-scanners.sh
 ```
 
 **Bandit:**
 ```bash
-pip3 install bandit
+sudo apt install -y bandit     # or: pipx install bandit
 ```
 
-**TruffleHog:**
+**Opengrep:** not installed, on purpose. `pip install opengrep` cannot work
+(it is not on PyPI), and installing the binary is not neutral:
+`core.resolve_grep_engine()` prefers `opengrep` over `semgrep`, so it would
+switch the engine behind every semgrep and repo-scan run, including the
+weekly sweep. `health.py` already counts semgrep as satisfying this slot.
+
+**TruffleHog** (the release asset carries the version in its filename; a
+URL without it 404s, and the PyPI `truffleHog` package is the abandoned v2):
 ```bash
-pip3 install trufflehog
+TAG=$(curl -s https://api.github.com/repos/trufflesecurity/trufflehog/releases/latest \
+  | grep -o '"tag_name"[^,]*' | cut -d'"' -f4)
+curl -fsSL -o /tmp/th.tar.gz \
+  "https://github.com/trufflesecurity/trufflehog/releases/download/$TAG/trufflehog_${TAG#v}_linux_amd64.tar.gz"
+tar -xzf /tmp/th.tar.gz -C /tmp trufflehog && sudo install -m 755 /tmp/trufflehog /usr/local/bin/
 ```
 
 **Gitleaks:**
@@ -360,15 +388,9 @@ tar -xzf gitleaks_8.18.0_linux_x64.tar.gz
 sudo mv gitleaks /usr/local/bin/
 ```
 
-**Checkov:**
-```bash
-pip3 install checkov
-```
-
-**Safety:**
-```bash
-pip3 install safety
-```
+**Checkov and Safety:** installed by `scripts/install-python-scanners.sh`
+above. Do not pip-install them into the server venv: recreating that venv
+deletes them, and scans then report success with those engines absent.
 
 **Trivy:**
 ```bash
@@ -377,6 +399,82 @@ echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main"
 sudo apt update
 sudo apt install trivy
 ```
+
+### OWASP Dependency-Check: the NVD cache
+
+Dependency-Check is the one tool that needs setup after installation. It
+matches your dependencies against a local copy of the NVD, and two things
+decide whether it works at all.
+
+**1. An API key.** `dependencycheck.properties` ships
+`nvd.api.requestsperthirtysecondswithoutapikey=5` against
+`nvd.api.requestsperthirtysecondswithapikey=50`. Without a key the first cache
+build crawls for hours. Request one at
+<https://nvd.nist.gov/developers/request-an-api-key>, then put it in `.env`:
+
+```bash
+echo 'NVD_API_KEY=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx' >> .env
+```
+
+`.env` is gitignored. The key is read from there, written to a 0600 property
+file and passed with `-P`. It never appears in a command line, because argv is
+readable through `/proc/<pid>/cmdline` by every local account, and because this
+server copies the command into every scan result and log line.
+
+**2. A writable cache directory.** The shipped default is `[JAR]/data`, inside
+root-owned `/opt/dependency-check`, which the server user cannot create, so
+every scan fails before it starts. `DEPENDENCY_CHECK_DATA_DIR` defaults to
+`/var/sast-mcp/depcheck-data` instead.
+
+Build the cache once, as the user the server runs as:
+
+```bash
+scripts/warm-nvd-cache.sh
+```
+
+Expect 10-30 minutes. It is safe to interrupt and re-run, and it skips a cache
+less than 24 hours old unless you pass `--force`. Scans then run with
+`--noupdate` and read the cache without touching the network.
+
+Confirm the server agrees:
+
+```bash
+curl -s localhost:6000/health | python3 -m json.tool | grep -A8 dependency_check
+```
+
+`/health` reports `nvd_api_key_configured`, `data_dir_writable` and
+`nvd_cache_present`, and lists `blockers` when any of them is missing. It never
+reports the key itself.
+
+**When the update fails.** Two upstream failures are common, and neither is a
+problem with your key. The script now pre-flights both and says which one it
+hit.
+
+`NVD Returned Status Code: 503` — the NVD API is unavailable. It returns 503 in
+bursts, and dependency-check retries without backoff, so 30 retries can burn in
+14 seconds ([#8469](https://github.com/dependency-check/DependencyCheck/issues/8469),
+[#8618](https://github.com/dependency-check/DependencyCheck/issues/8618),
+[#6107](https://github.com/dependency-check/DependencyCheck/issues/6107)). The
+script sets `--nvdApiDelay 6000` and retries the whole update three times with
+widening gaps. If every attempt gets 503, wait and re-run; a failed update
+leaves the existing cache untouched.
+
+`403 Forbidden` on `www.cisa.gov` — the Known Exploited Vulnerabilities feed is
+blocked from some networks, and that single failure aborts the whole NVD update.
+The script probes the feed and, when it is blocked, passes
+`--disableKnownExploited` so the NVD download completes. Findings then lack the
+"known exploited" flag. To keep it, mirror the feed somewhere you control and
+pass `--kev-url <url>`, or set `DEPENDENCY_CHECK_KEV_URL`. Do not point it at a
+third-party mirror you have not vetted: it decides which findings get
+prioritised.
+
+A `401` or `403` from `services.nvd.nist.gov` is the one case that *is* the key.
+A new key must be activated from the link in the NVD's email before it works.
+
+In a fleet scan, Dependency-Check runs only on Maven and Gradle repos, where it
+is strongest. Set `DEPENDENCY_CHECK_ALL_ECOSYSTEMS=1` to include npm and Python
+repos as well; it costs minutes per repo across the estate, and npm audit,
+safety, pip-audit and trivy already cover those ecosystems.
 
 ### Installing Kali Linux Tools
 

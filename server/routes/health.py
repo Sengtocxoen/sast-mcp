@@ -4,6 +4,7 @@ Health check route: GET /health with tool availability and scan stats.
 import logging
 import os
 import shutil
+import time
 from typing import Any, Dict, List
 
 import pathmap
@@ -132,7 +133,9 @@ def _tool_functional(tool: str, check_cmd: str) -> Dict[str, Any]:
 
 
 from config import (  # noqa: E402
+    DEPENDENCY_CHECK_DATA_DIR,
     DEPENDENCY_CHECK_PATH,
+    NVD_API_KEY,
     FORCE_SYNC_SCANS,
     MAX_PARALLEL_SCANS,
     MAX_PROCESS_WORKERS,
@@ -140,6 +143,47 @@ from config import (  # noqa: E402
 from core import MULTIPROCESSING_ACTIVE  # noqa: E402
 
 logger = logging.getLogger(__name__)
+
+
+def _dependency_check_readiness() -> Dict[str, Any]:
+    """Whether Dependency-Check could actually run, and why not."""
+    data_dir = DEPENDENCY_CHECK_DATA_DIR
+    cache_files: List[str] = []
+    newest = 0.0
+    if os.path.isdir(data_dir):
+        for name in os.listdir(data_dir):
+            full = os.path.join(data_dir, name)
+            if os.path.isfile(full):
+                cache_files.append(name)
+                newest = max(newest, os.path.getmtime(full))
+
+    info: Dict[str, Any] = {
+        "binary": DEPENDENCY_CHECK_PATH,
+        "installed": shutil.which(DEPENDENCY_CHECK_PATH, path=_ENHANCED_PATH) is not None
+        or os.path.isabs(DEPENDENCY_CHECK_PATH) and os.access(DEPENDENCY_CHECK_PATH, os.X_OK),
+        "nvd_api_key_configured": bool(NVD_API_KEY),
+        "data_dir": data_dir,
+        "data_dir_writable": os.path.isdir(data_dir) and os.access(data_dir, os.W_OK),
+        "nvd_cache_present": bool(cache_files),
+    }
+    if newest:
+        info["nvd_cache_age_hours"] = round((time.time() - newest) / 3600.0, 1)
+    blockers = []
+    if not info["installed"]:
+        blockers.append("binary not found")
+    if not info["data_dir_writable"]:
+        blockers.append(f"{data_dir} is not writable; scans cannot build the NVD cache")
+    if not info["nvd_cache_present"]:
+        if info["nvd_api_key_configured"]:
+            blockers.append("NVD cache empty; run scripts/warm-nvd-cache.sh once")
+        else:
+            blockers.append(
+                "NVD cache empty and NVD_API_KEY unset; set it in .env, then run "
+                "scripts/warm-nvd-cache.sh"
+            )
+    if blockers:
+        info["blockers"] = blockers
+    return info
 
 
 def register(app: Flask) -> None:
@@ -247,6 +291,13 @@ def register(app: Flask) -> None:
                     "them. Reinstall with scripts/install-python-scanners.sh so they "
                     "live in pipx venvs instead."
                 )} if fragile_tools else {}),
+            # Dependency-Check needs two things beyond its binary, and both
+            # have failed quietly here before: a writable NVD cache (the
+            # default lives in root-owned /opt/dependency-check) and an API
+            # key, without which the NVD allows 5 requests per 30 seconds
+            # instead of 50. "installed" says nothing about either, so report
+            # them. The key itself is never included, only whether it is set.
+            "dependency_check": _dependency_check_readiness(),
             "all_essential_tools_available": all_essential_available,
             "total_tools_available": available_count,
             "total_tools_count": total_count,
