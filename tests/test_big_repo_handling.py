@@ -31,18 +31,22 @@ from routes import repo_scan  # noqa: E402
 
 @pytest.mark.parametrize("name", [
     ".next", ".nuxt", ".svelte-kit", ".angular", ".turbo", ".parcel-cache",
-    ".terraform", ".serverless", ".gradle", "coverage", "target",
+    ".terraform", ".serverless", ".gradle", ".pytest_cache", ".ruff_cache",
 ])
-def test_build_output_is_skipped(name):
+def test_build_output_is_skipped_by_the_pattern_engines(name):
     assert name in repo_scan._SKIP_DIRS
 
 
-@pytest.mark.parametrize("name", ["out", ".cache", "public", "static", "src"])
-def test_ambiguous_names_are_not_skipped(name):
-    """These have projects that keep real source there, so they stay in scope.
+@pytest.mark.parametrize("name", ["coverage", "target", "out", ".cache",
+                                  "public", "static", "src", "lib"])
+def test_unanchored_plain_names_are_not_skipped(name):
+    """Every skipped name is a dot-directory, which cannot be a source tree.
 
-    Locked by a test because the cheap way to speed up a sweep is to add names
-    here, and losing source is worse than a slow scan.
+    A plain name matches at any depth, and projects do keep real code under
+    coverage/, target/, out/ and lib/. Measured on this estate .next is 464 MB
+    of the 485 MB of build output, so the plain names buy little and risk
+    dropping source silently. Locked by a test because adding names here is the
+    cheap way to make a sweep look faster.
     """
     assert name not in repo_scan._SKIP_DIRS
 
@@ -53,15 +57,29 @@ def test_source_directories_are_still_skipped():
         assert name in repo_scan._SKIP_DIRS
 
 
-def test_staging_copy_never_brings_build_output_to_the_scan_host():
-    """_stage_repo passes _SKIP_DIRS to ignore_patterns, so an excluded tree is
-    not copied at all - which is what makes this fix help every engine, not just
-    the ones that take an --exclude flag."""
+def test_staging_still_copies_build_output_for_the_secret_scanners():
+    """Build output must reach the scan host even though the pattern engines
+    skip it.
+
+    gitleaks and trufflehog read the staged tree, and a compiled bundle is one
+    of the places a key actually ends up: anything inlined at build time is in
+    there whether or not it is in the source. The first version of this change
+    excluded these directories from the copy as well, which removed that from
+    secret scanning without saying so.
+    """
     import shutil
-    ignore = shutil.ignore_patterns(*repo_scan._SKIP_DIRS)
-    ignored = ignore("/repo", [".next", "src", "coverage", "app.js", "node_modules"])
-    assert ".next" in ignored and "coverage" in ignored and "node_modules" in ignored
+    ignore = shutil.ignore_patterns(*repo_scan._STAGE_SKIP_DIRS)
+    ignored = ignore("/repo", [".next", "src", "app.js", "node_modules", ".git"])
+    assert "node_modules" in ignored and ".git" in ignored
+    assert ".next" not in ignored, "build output must still be staged"
     assert "src" not in ignored and "app.js" not in ignored
+
+
+def test_the_two_skip_sets_differ_only_by_build_output():
+    assert repo_scan._STAGE_SKIP_DIRS == repo_scan._SKIP_DIRS_SOURCE
+    assert repo_scan._SKIP_DIRS == (repo_scan._SKIP_DIRS_SOURCE
+                                    | repo_scan._SKIP_DIRS_BUILD)
+    assert not (repo_scan._SKIP_DIRS_BUILD & repo_scan._STAGE_SKIP_DIRS)
 
 
 # -- the semgrep command ---------------------------------------------------
@@ -99,8 +117,45 @@ def test_semgrep_excludes_build_output(plan_env, tmp_path):
     cmd = _cmd(repo_scan._build_plan(_ctx({".ts": 40}), str(tmp_path), str(tmp_path), {}),
                "semgrep")
     assert cmd
-    for name in (".next", "coverage", "node_modules"):
+    for name in (".next", ".turbo", "node_modules", "vendor"):
         assert f"--exclude {name}" in cmd or f"--exclude '{name}'" in cmd, name
+
+
+def test_bearer_skips_build_output(plan_env, tmp_path):
+    """bearer takes --skip-path, so it does not have to read bundles either."""
+    cmd = _cmd(repo_scan._build_plan(_ctx({".ts": 40}), str(tmp_path), str(tmp_path), {}),
+               "bearer")
+    assert "--skip-path" in cmd
+    assert ".next/*" in cmd
+
+
+def test_graudit_excludes_minified_files_since_it_cannot_exclude_dirs(plan_env, tmp_path):
+    """graudit's -x takes file patterns only, not directories."""
+    cmd = _cmd(repo_scan._build_plan(_ctx({".js": 40}), str(tmp_path), str(tmp_path), {}),
+               "graudit")
+    assert " -x " in cmd
+    assert "*.min.js" in cmd
+
+
+def test_secret_scanners_are_not_given_build_exclusions(plan_env, tmp_path):
+    """They are the reason build output is still staged."""
+    plan = repo_scan._build_plan(_ctx({".js": 40}), str(tmp_path), str(tmp_path), {})
+    for tool in ("gitleaks", "trufflehog"):
+        cmd = _cmd(plan, tool)
+        if not cmd:
+            continue
+        assert ".next" not in cmd, f"{tool} must still read build output"
+
+
+def test_the_coverage_report_names_what_was_excluded(plan_env, tmp_path):
+    """A skip that is only visible in the source is a skip nobody reviews."""
+    ctx = _ctx({".ts": 40})
+    plan = repo_scan._build_plan(ctx, str(tmp_path), str(tmp_path), {})
+    cov = repo_scan._coverage(ctx, plan, {})
+    assert ".next" in cov["excluded"]["build_dirs"]
+    assert "node_modules" in cov["excluded"]["dependency_dirs"]
+    assert "*.min.js" in cov["excluded"]["file_globs"]
+    assert "gitleaks" in cov["excluded"]["note"]
 
 
 def test_semgrep_excludes_minified_files(plan_env, tmp_path):

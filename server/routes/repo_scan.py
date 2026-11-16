@@ -112,17 +112,31 @@ _SKIP_DIRS_SOURCE = {".git", "vendor", "node_modules", "dist", "build", "testdat
 # bundles in .next, took 2,713s against 112s the week before - 24x, where
 # comparable repos moved 4-6x. The whole cycle ran 9h48m against 8h20m.
 #
-# These names are build output in every project that uses them. Deliberately NOT
-# included, because each has projects that keep real source there: "out",
-# ".cache", "public" and "static".
+# Only dot-directories are listed, and that is deliberate. A leading dot means
+# tool state in every ecosystem, so these names cannot be a source tree. Plain
+# names like "coverage", "target", "out", "cache", "public" and "static" are
+# excluded from this set even though some of them hold build output here,
+# because each has projects that keep real code under that name and an
+# unanchored match would silently drop it. Measured on this estate, .next is
+# 464 MB of the 485 MB, so the plain names buy little and risk much. If
+# "coverage" is wanted later, anchor it to the repository root rather than
+# matching it at any depth.
 _SKIP_DIRS_BUILD = {".next", ".nuxt", ".svelte-kit", ".angular", ".turbo",
                     ".parcel-cache", ".pytest_cache", ".ruff_cache",
-                    ".terraform", ".serverless", ".gradle", "coverage", "target"}
+                    ".terraform", ".serverless", ".gradle"}
 
-# One set, so every engine, the staging copy and the file census agree. Adding a
-# name here also keeps it off the scan host entirely: _stage_repo passes this to
-# shutil.ignore_patterns, so an excluded tree is never copied in the first place.
+# What the pattern engines skip: source dependencies plus build output.
 _SKIP_DIRS = _SKIP_DIRS_SOURCE | _SKIP_DIRS_BUILD
+
+# What the staging copy skips, which is the SOURCE set only.
+#
+# Build output stays on the scan host on purpose. gitleaks and trufflehog read
+# the staged tree, and a compiled bundle is one of the places a key actually
+# ends up: anything inlined at build time is in there whether or not it is in
+# the source. Excluding these directories from the copy, as the first version of
+# this change did, would have removed that from secret scanning without saying
+# so - the same silent coverage loss this change exists to fix.
+_STAGE_SKIP_DIRS = _SKIP_DIRS_SOURCE
 # File patterns the pattern engines skip wherever they appear. Source maps are
 # generated, *.min.* and *.bundle.* are compiled output.
 _SKIP_FILE_GLOBS = ("*.min.js", "*.min.mjs", "*.min.css", "*.bundle.js",
@@ -227,7 +241,7 @@ def _stage_local(path: str, base_dir: str, mode: str = "auto") -> Dict[str, Any]
         # staging can never be the reason a scan produces nothing.
         logger.warning(f"tar staging produced nothing for {src}; falling back to copytree")
         shutil.rmtree(dest, ignore_errors=True)
-        shutil.copytree(src, dest, ignore=shutil.ignore_patterns(*_SKIP_DIRS),
+        shutil.copytree(src, dest, ignore=shutil.ignore_patterns(*_STAGE_SKIP_DIRS),
                         symlinks=False, ignore_dangling_symlinks=True)
         res = {"return_code": 0}
     out = {"dest": dest, "name": name, "reused": False, "staged": True,
@@ -236,7 +250,7 @@ def _stage_local(path: str, base_dir: str, mode: str = "auto") -> Dict[str, Any]
     # A partial copy (tar timed out or failed mid-stream) is still scanned, because
     # scanning in place off the share is ~100x slower. But it must be visible:
     # a large repo was once scanned with ~1,000 files missing and no error anywhere.
-    defect = staging._copy_defect(src, dest, res, frozenset(_SKIP_DIRS))
+    defect = staging._copy_defect(src, dest, res, frozenset(_STAGE_SKIP_DIRS))
     if defect:
         logger.warning(f"staging incomplete for {src}: {defect}")
         out["stage_defect"] = defect
@@ -904,8 +918,13 @@ def _build_plan(ctx: Dict[str, Any], dest: str, out_dir: str,
     # bearer covers js/ts/ruby/java/php/go/python with dataflow + PII rules, so it
     # is the main independent second opinion against semgrep on those languages.
     if code_langs and have("bearer") and want.get("bearer", True):
+        # --skip-path takes comma-separated globs. bearer also honours
+        # .gitignore by default, which already covers build output in most
+        # repositories, but not in one that commits it.
+        skip = ",".join(f"{d}/*" for d in sorted(_SKIP_DIRS_BUILD))
         add("bearer",
             f"bearer scan {q(dest)} --format json --output {q(rep('bearer'))} "
+            f"--skip-path {q(skip)} "
             f"--quiet --exit-code 0 --disable-version-check || true",
             rep("bearer"), _SEMGREP_TIMEOUT, weight=2)
 
@@ -918,7 +937,12 @@ def _build_plan(ctx: Dict[str, Any], dest: str, out_dir: str,
     # and a killed run leaves a report file that looks like any other. Scale the
     # limit with the amount of code instead.
     if code_langs and have("graudit") and want.get("graudit", True):
-        add("graudit", f"graudit -z -c 0 {q(dest)} > {q(rep('graudit'))} 2>/dev/null || true",
+        # graudit's -x excludes files, not directories, so it gets the minified
+        # globs and reads build directories anyway. Its cost there is bounded by
+        # the time limit above, which now fits the tree.
+        xcl = ",".join(_SKIP_FILE_GLOBS)
+        add("graudit",
+            f"graudit -z -c 0 -x {q(xcl)} {q(dest)} > {q(rep('graudit'))} 2>/dev/null || true",
             rep("graudit"), _graudit_timeout(sum(langs.values())))
 
     # --- secrets: two independent detectors ---
@@ -1028,6 +1052,18 @@ def _coverage(ctx: Dict[str, Any], plan: List[Dict[str, Any]],
         "tools_skipped": dict(sorted((skips or {}).items())),
         "engine": resolve_grep_engine(),
         "markers_found": sorted(ctx["markers"].keys()),
+        # What the pattern engines did not read. Recorded because a skip that is
+        # only visible in the source is a skip nobody reviews: this is the same
+        # reason tools_skipped exists.
+        "excluded": {
+            "dependency_dirs": sorted(_SKIP_DIRS_SOURCE),
+            "build_dirs": sorted(_SKIP_DIRS_BUILD),
+            "file_globs": sorted(_SKIP_FILE_GLOBS),
+            "note": ("Build directories and these file patterns are skipped by the "
+                     "pattern engines only. They are still copied to the scan host and "
+                     "still read by gitleaks and trufflehog, because a compiled bundle "
+                     "can carry a key that is not in the source."),
+        },
     }
 
 
